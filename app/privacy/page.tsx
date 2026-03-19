@@ -76,7 +76,7 @@ export default function ShopPrivacyPage() {
           <h2>4. Data Sharing with Third Parties</h2>
           <ul>
             <li><strong>Supabase:</strong> Secure cloud database storage</li>
-            <li><strong>Twilio:</strong> OTP SMS delivery</strong></li>
+            <li><strong>Twilio:</strong> OTP SMS delivery</li>
             <li><strong>Law Enforcement:</strong> When required by Indian law or court order</li>
           </ul>
         </div>
