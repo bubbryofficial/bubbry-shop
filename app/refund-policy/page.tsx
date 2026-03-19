@@ -31,7 +31,7 @@ export default function ShopRefundPage() {
         <div className="title">Seller Refund Policy</div>
       </div>
       <div className="page">
-        <h1>Seller Refund & Dispute Policy</h1>
+        <h1>Seller Refund &amp; Dispute Policy</h1>
         <div className="badge">Last updated: {DATE}</div>
         <div className="warn"><p>⚠️ As a Seller on Bubbry, you are the primary party responsible for resolving customer refund requests. Bubbry acts as a facilitator only.</p></div>
 

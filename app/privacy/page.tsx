@@ -31,7 +31,7 @@ export default function ShopPrivacyPage() {
       </div>
       <div className="page">
         <h1>Seller Privacy Policy</h1>
-        <div className="badge">Last updated: {DATE} · Compliant with IT Act 2000 & PDPB 2023</div>
+        <div className="badge">Last updated: {DATE} · Compliant with IT Act 2000 &amp; PDPB 2023</div>
         <div className="card">
           <h2>1. Information We Collect from Sellers</h2>
           <ul>
