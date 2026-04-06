@@ -118,15 +118,15 @@ export default function AddProduct() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { alert("Login first"); return; }
 
-    // Upload image if selected and product has no image
+    // Upload image if selected and product has no approved image
     const imgFile = imgFileMap[product.id];
     if (imgFile && !product.image_url) {
       setUploadingMap((p) => ({ ...p, [product.id]: true }));
       try {
         const publicUrl = await uploadImage(imgFile, product.id);
-        await supabase.from("master_products").update({ image_url: publicUrl }).eq("id", product.id);
-        // Update local product list
-        setProducts((prev) => prev.map((p) => p.id === product.id ? { ...p, image_url: publicUrl } : p));
+        // Save to pending_image_url — admin must approve before it shows as image_url
+        await supabase.from("master_products").update({ pending_image_url: publicUrl }).eq("id", product.id);
+        setProducts((prev) => prev.map((p) => p.id === product.id ? { ...p, pending_image_url: publicUrl } : p));
       } catch (err) {
         console.error("Upload failed");
       }
@@ -157,6 +157,9 @@ export default function AddProduct() {
         <div className="top-row">
           <a href="/shop-dashboard" className="back-btn">←</a>
           <div className="page-title">Add Products</div>
+          <a href="/bulk-upload" style={{display:"flex",alignItems:"center",gap:5,background:"rgba(255,255,255,0.18)",padding:"6px 10px",borderRadius:9,textDecoration:"none",color:"white",fontSize:12,fontWeight:800,flexShrink:0}}>
+            📊 Bulk
+          </a>
         </div>
         <div className="search-bar">
           <span style={{ fontSize: 16 }}>🔍</span>
@@ -177,22 +180,27 @@ export default function AddProduct() {
           <>
             <div className="results-label">{products.length} products found</div>
             {products.map((product) => {
-              const previewUrl = imgPreviewMap[product.id] || product.image_url || "";
+              const previewUrl = imgPreviewMap[product.id] || product.image_url || product.pending_image_url || "";
               const hasExistingImg = !!product.image_url;
+              const hasPendingImg = !!product.pending_image_url && !product.image_url;
               const isUploading = uploadingMap[product.id];
 
               return (
                 <div key={product.id} className="product-row">
                   <div className="product-top">
-                    <div className="product-img">
+                    <div className="product-img" style={{position:"relative"}}>
                       {previewUrl
                         ? <img src={previewUrl} alt={product.name} />
                         : "🛍️"}
+                      {hasPendingImg && (
+                        <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(255,180,0,0.92)",fontSize:9,fontWeight:800,color:"white",textAlign:"center",padding:"2px 0",borderRadius:"0 0 6px 6px"}}>⏳ Pending</div>
+                      )}
                     </div>
                     <div className="product-details">
                       <div className="product-name">{product.name ?? "Unnamed"}</div>
                       {product.size && <div className="product-size">{product.size}</div>}
                       {product.category && <span className="product-cat">{product.category}</span>}
+                      {hasPendingImg && <div style={{fontSize:10,color:"#946200",fontWeight:700,marginTop:3}}>📸 Photo pending admin approval</div>}
                     </div>
                   </div>
 

@@ -67,6 +67,25 @@ export default function Login() {
   async function sendPhoneOtp() {
     if (phone.replace(/\D/g, "").length < 10) { alert("Enter a valid 10-digit number"); return; }
     setLoading(true);
+    // Check all profiles with this phone
+    const { data: profiles } = await supabase
+      .from("profiles")
+      .select("id, role")
+      .eq("phone", fullPhone);
+    if (!profiles || profiles.length === 0) {
+      alert("This number is not registered. Please sign up first.");
+      setLoading(false);
+      return;
+    }
+    const shopProfile = profiles.find((p: any) => p.role === "shopkeeper");
+    if (!shopProfile) {
+      // Has customer account but no shopkeeper — offer to create shopkeeper account
+      if (confirm("This number has a customer account but no shopkeeper account.\n\nDo you want to register as a shopkeeper with this number?")) {
+        router.push("/signup");
+      }
+      setLoading(false);
+      return;
+    }
     const { error } = await supabase.auth.signInWithOtp({ phone: fullPhone });
     if (error) { alert("Could not send OTP: " + error.message); setLoading(false); return; }
     setLoading(false);

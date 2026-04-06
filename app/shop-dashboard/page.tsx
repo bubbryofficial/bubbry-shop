@@ -199,6 +199,12 @@ export default function ShopDashboard() {
   const [loading, setLoading] = useState(false);
   const [addSuccess, setAddSuccess] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [masterSearchResults, setMasterSearchResults] = useState<any[]>([]);
+  const [masterSearchLoading, setMasterSearchLoading] = useState(false);
+  const [quickAddId, setQuickAddId] = useState<string|null>(null);
+  const [quickAddPrice, setQuickAddPrice] = useState("");
+  const [quickAddStock, setQuickAddStock] = useState("");
+  const [quickAddLoading, setQuickAddLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [selectedProductId, setSelectedProductId] = useState<string|null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -207,6 +213,7 @@ export default function ShopDashboard() {
   const [existingImgUrl, setExistingImgUrl] = useState<string>("");
   const [uploadingImg, setUploadingImg] = useState(false);
   const [isLive, setIsLive] = useState(false);
+  const [autoOfflinedUntil, setAutoOfflinedUntil] = useState<Date|null>(null);
   const [offersDelivery, setOffersDelivery] = useState(false);
   const [offersPickup, setOffersPickup] = useState(true);
   const [togglingLive, setTogglingLive] = useState(false);
@@ -230,30 +237,46 @@ export default function ShopDashboard() {
   const [savedStockMap, setSavedStockMap] = useState<Record<string, boolean>>({});
   const imgInputRef = useRef<HTMLInputElement>(null);
   const suggestionDebounce = useRef<any>(null);
+  const scrollSaveRef = useRef<number>(0); // saves window scroll before background refresh
+  const productsRef = useRef<any[]>([]); // mirrors products state — avoids search re-trigger on every poll
 
   useEffect(() => {
     fetchCategories();
     let initialized = false;
+    let uid = "";
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      // Only run once on initial session load, not on every token refresh
       if (!initialized && session?.user) {
-        initialized = true;
-        loadShopStatus(session.user.id);
-        fetchProducts(session.user.id);
-        saveShopLocation(session.user.id);
+        initialized = true; uid = session.user.id;
+        loadShopStatus(uid); fetchProducts(uid);
       }
     });
-    // Also try getSession immediately in case onAuthStateChange already fired
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!initialized && session?.user) {
-        initialized = true;
-        loadShopStatus(session.user.id);
-        fetchProducts(session.user.id);
-        saveShopLocation(session.user.id);
+        initialized = true; uid = session.user.id;
+        loadShopStatus(uid); fetchProducts(uid);
       }
     });
-    return () => subscription.unsubscribe();
+    // Realtime — refresh inventory and shop status on any change
+    const rt = supabase.channel("shop-dash-rt")
+      .on("postgres_changes", { event: "*", schema: "public", table: "shop_products" }, () => {
+        if (uid) fetchProducts(uid, true); // silent — don't jump scroll
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, () => {
+        if (uid) loadShopStatus(uid);
+      })
+      .subscribe();
+    // Poll every 10s — silent so scroll position is preserved
+    const poll = setInterval(() => { if (uid) fetchProducts(uid, true); }, 10000);
+    return () => { subscription.unsubscribe(); supabase.removeChannel(rt); clearInterval(poll); };
   }, []);
+
+  async function sendShopNotification(shopId: string, title: string, body: string, type: string) {
+    try {
+      await supabase.from("notifications").insert({
+        user_id: shopId, title, body, type, read: false, created_at: new Date().toISOString()
+      });
+    } catch {}
+  }
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -269,6 +292,8 @@ export default function ShopDashboard() {
     if (error) { alert("Failed to save: " + error.message); } else { alert("UPI ID saved! ✓"); }
   }
 
+  const [pendingCount, setPendingCount] = useState(0);
+
   async function loadShopStatus(userId?: string) {
     let uid = userId;
     if (!uid) {
@@ -278,12 +303,30 @@ export default function ShopDashboard() {
     }
     const { data, error } = await supabase
       .from("profiles")
-      .select("is_live, offers_delivery, offers_pickup, shopfront_verified, shopfront_image, upi_id, shop_name, name")
+      .select("is_live, offers_delivery, offers_pickup, shopfront_verified, shopfront_image, upi_id, shop_name, name, auto_offlined_until")
       .eq("id", uid)
       .single();
     if (error) { console.log("loadShopStatus error:", error.message); return; }
+    // Fetch pending order count for badge
+    if (userId) {
+      const { count } = await supabase.from("orders")
+        .select("id", { count: "exact", head: true })
+        .eq("shop_id", userId)
+        .eq("status", "pending");
+      setPendingCount(count || 0);
+    }
     if (data) {
+      // Check if auto-offline period has expired — if so, clear it
+      if (data.auto_offlined_until) {
+        const until = new Date(data.auto_offlined_until);
+        if (until <= new Date()) {
+          // Period over — clear the field so shop can go live again
+          await supabase.from("profiles").update({ auto_offlined_until: null }).eq("id", uid);
+          data.auto_offlined_until = null;
+        }
+      }
       setIsLive(data.is_live === true);
+      setAutoOfflinedUntil(data.auto_offlined_until ? new Date(data.auto_offlined_until) : null);
       setOffersDelivery(data.offers_delivery === true);
       setOffersPickup(data.offers_pickup === true || data.offers_pickup === null);
       setShopfrontVerified(data.shopfront_verified === true);
@@ -301,13 +344,23 @@ export default function ShopDashboard() {
     const user = session?.user;
     if (!user) { setTogglingLive(false); return; }
 
-    // Always re-read shopfront_verified from DB before allowing go-live
     if (val) {
       const { data: fresh } = await supabase
         .from("profiles")
-        .select("shopfront_verified")
+        .select("shopfront_verified, auto_offlined_until")
         .eq("id", user.id)
         .single();
+
+      // Block if auto-offlined due to too many cancellations today
+      if (fresh?.auto_offlined_until && new Date(fresh.auto_offlined_until) > new Date()) {
+        const until = new Date(fresh.auto_offlined_until);
+        const timeLeft = `${until.getHours().toString().padStart(2,"0")}:${until.getMinutes().toString().padStart(2,"0")}`;
+        alert(`⚠️ Your shop is suspended until midnight (${timeLeft}) because you cancelled 2 or more orders today.\n\nYou can go live again after midnight.`);
+        setTogglingLive(false);
+        return;
+      }
+
+      // Block if shopfront not approved
       if (fresh?.shopfront_verified !== true) {
         alert("Your shopfront photo is still under review. You can go live once an admin approves it.");
         setShopfrontVerified(false);
@@ -317,26 +370,12 @@ export default function ShopDashboard() {
       setShopfrontVerified(true);
     }
 
-    const { error } = await supabase
-      .from("profiles")
-      .update({ is_live: val })
-      .eq("id", user.id);
-    if (error) {
-      alert("Failed to update live status: " + error.message);
-      setTogglingLive(false);
-      return;
-    }
-    // Read back to confirm write succeeded
-    const { data: check } = await supabase
-      .from("profiles")
-      .select("is_live")
-      .eq("id", user.id)
-      .single();
+    const { error } = await supabase.from("profiles").update({ is_live: val }).eq("id", user.id);
+    if (error) { alert("Failed to update live status: " + error.message); setTogglingLive(false); return; }
+    const { data: check } = await supabase.from("profiles").select("is_live").eq("id", user.id).single();
     const confirmed = check?.is_live === true;
     setIsLive(confirmed);
-    if (val && !confirmed) {
-      alert("Could not save live status — check your Supabase RLS policies for the profiles table.");
-    }
+    if (val && !confirmed) alert("Could not save live status — check your Supabase RLS policies for the profiles table.");
     setTogglingLive(false);
   }
 
@@ -369,6 +408,46 @@ export default function ShopDashboard() {
       setImgPreview("");
     }
   }, [selectedProductId]);
+
+  // Search master_products when inventory search is active
+  // Uses productsRef so polling never re-triggers the Supabase fetch or shows a spinner
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) { setMasterSearchResults([]); setMasterSearchLoading(false); return; }
+    // Only show spinner on a fresh search (no results yet), not on background inventory syncs
+    if (masterSearchResults.length === 0) setMasterSearchLoading(true);
+    const timer = setTimeout(async () => {
+      const { data } = await supabase
+        .from("master_products")
+        .select("id, name, size, image_url, category, brand")
+        .ilike("name", `%${q}%`)
+        .limit(60);
+      const inventoryIds = new Set(productsRef.current.map((p: any) => p.product_id));
+      const newResults = (data || []).map((mp: any) => ({
+        ...mp,
+        inInventory: inventoryIds.has(mp.id),
+        inventoryProduct: productsRef.current.find((p: any) => p.product_id === mp.id) || null,
+      }));
+      const savedScroll = window.scrollY;
+      setMasterSearchResults(newResults);
+      setMasterSearchLoading(false);
+      requestAnimationFrame(() => { if (savedScroll > 0) window.scrollTo({ top: savedScroll, behavior: "instant" as ScrollBehavior }); });
+    }, 300);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]); // products intentionally excluded — productsRef used instead
+
+  // When inventory updates in the background, remap inInventory flags without re-fetching
+  useEffect(() => {
+    if (!searchQuery.trim() || masterSearchResults.length === 0) return;
+    const inventoryIds = new Set(products.map((p: any) => p.product_id));
+    setMasterSearchResults(prev => prev.map(mp => ({
+      ...mp,
+      inInventory: inventoryIds.has(mp.id),
+      inventoryProduct: products.find((p: any) => p.product_id === mp.id) || null,
+    })));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products]);
 
   async function checkExistingImage(productId: string) {
     const { data } = await supabase
@@ -501,20 +580,9 @@ export default function ShopDashboard() {
     return data.publicUrl + "?t=" + Date.now();
   }
 
-  async function saveShopLocation(userId?: string) {
-    if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      let uid = userId;
-      if (!uid) {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
-        uid = user.id;
-      }
-      await supabase.from("profiles").update({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }).eq("id", uid);
-    });
-  }
+  // Shop location is pinned during signup and never auto-updated
 
-  async function fetchProducts(userId?: string) {
+  async function fetchProducts(userId?: string, silent = false) {
     let uid = userId;
     if (!uid) {
       const { data: { user } } = await supabase.auth.getUser();
@@ -534,10 +602,17 @@ export default function ShopDashboard() {
       .in("id", productIds);
     const mpMap: any = {};
     (mpData || []).forEach((mp: any) => { mpMap[mp.id] = mp; });
-    setProducts(spData.map((r: any) => ({
+    // Save scroll before update, restore after on silent refreshes
+    if (silent) scrollSaveRef.current = window.scrollY;
+    const newProducts = spData.map((r: any) => ({
       ...r,
       image_url: mpMap[r.product_id]?.image_url ?? "",
-    })));
+    }));
+    productsRef.current = newProducts;
+    setProducts(newProducts);
+    if (silent && scrollSaveRef.current > 0) {
+      requestAnimationFrame(() => { window.scrollTo({ top: scrollSaveRef.current, behavior: "instant" as ScrollBehavior }); });
+    }
   }
 
   async function updateStockInline(productId: string, newStock: number) {
@@ -647,6 +722,27 @@ export default function ShopDashboard() {
     fetchProducts();
   }
 
+  async function quickAddProduct(mp: any) {
+    if (!quickAddPrice || !quickAddStock) { alert("Enter price and stock"); return; }
+    setQuickAddLoading(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { alert("Please login"); setQuickAddLoading(false); return; }
+    const { error } = await supabase.from("shop_products").upsert({
+      shop_id: user.id,
+      product_id: mp.id,
+      price: Number(quickAddPrice),
+      stock: Number(quickAddStock),
+      name: mp.name,
+      size: mp.size || "",
+    }, { onConflict: "shop_id,product_id" });
+    if (error) { alert(error.message); setQuickAddLoading(false); return; }
+    setQuickAddId(null);
+    setQuickAddPrice("");
+    setQuickAddStock("");
+    setQuickAddLoading(false);
+    fetchProducts();
+  }
+
   const filtered = products.filter((p) => (p.name ?? "").toLowerCase().includes(searchQuery.toLowerCase()));
   const totalStock = products.reduce((s, p) => s + (p.stock ?? 0), 0);
   const lowStock = products.filter((p) => (p.stock ?? 0) < 5).length;
@@ -687,6 +783,18 @@ export default function ShopDashboard() {
 
         {/* Live bar */}
         <div className="live-bar">
+          {/* Auto-offline suspension banner */}
+          {autoOfflinedUntil && autoOfflinedUntil > new Date() && (
+            <div style={{background:"#FFF0F0",border:"1.5px solid #FFCDD2",borderRadius:10,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",gap:10}}>
+              <div style={{fontSize:20}}>🚫</div>
+              <div>
+                <div style={{fontSize:13,fontWeight:800,color:"#E53E3E"}}>Shop suspended until midnight</div>
+                <div style={{fontSize:11,color:"#8A96B5",fontWeight:500,marginTop:2}}>
+                  You cancelled 2+ orders today. You can go live again after midnight.
+                </div>
+              </div>
+            </div>
+          )}
           <div className="live-toggle-row">
             <div className="live-toggle-label">
               <div className={`live-dot ${isLive ? "on" : ""}`} />
@@ -983,81 +1091,191 @@ export default function ShopDashboard() {
           <>
             <div className="search-bar">
               <span>🔍</span>
-              <input placeholder="Search products..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+              <input placeholder="Search all products..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+              {searchQuery && <span style={{cursor:"pointer",color:"#B0BACC",fontSize:16,flexShrink:0}} onClick={() => setSearchQuery("")}>✕</span>}
             </div>
-            {filtered.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">{searchQuery ? "🔍" : "📦"}</div>
-                <div className="empty-title">{searchQuery ? "No products found" : "No products yet"}</div>
-                <div className="empty-sub">{searchQuery ? "Try a different search" : "Add your first product above"}</div>
-              </div>
+
+            {!searchQuery.trim() ? (
+              /* No search — show own inventory */
+              filtered.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-icon">📦</div>
+                  <div className="empty-title">No products yet</div>
+                  <div className="empty-sub">Add your first product above</div>
+                </div>
+              ) : (
+                filtered.map((p) => {
+                  const editVal = editStockMap[p.id] ?? String(p.stock ?? 0);
+                  const delta = Number(editVal) - (p.stock ?? 0);
+                  return (
+                    <div key={p.id} className="prod-card" style={{flexDirection:"column",alignItems:"stretch",gap:10}}>
+                      <div style={{display:"flex",alignItems:"center",gap:12}}>
+                        <div className="prod-icon">
+                          {p.image_url
+                            ? <img src={p.image_url} alt={p.name} />
+                            : (p.stock ?? 0) < 5 ? "⚠️" : "🛍️"}
+                        </div>
+                        <div className="prod-info">
+                          <div className="prod-name">{p.name ?? "Unnamed"}</div>
+                          {p.size && <div style={{fontSize:"11px",color:"#8A96B5",fontWeight:600,marginBottom:3}}>{p.size}</div>}
+                          <div className="prod-meta">
+                            <span className="prod-price">₹{p.price}</span>
+                            <span className={`stock-badge ${(p.stock ?? 0) < 5 ? "stock-low" : "stock-ok"}`}>{p.stock ?? 0} in stock</span>
+                          </div>
+                        </div>
+                        <button className="del-btn" onClick={() => deleteProduct(p.id)}>🗑️</button>
+                      </div>
+                      <div>
+                        <div style={{fontSize:"10px",fontWeight:800,color:"#8A96B5",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:6}}>Update Stock</div>
+                        <div className="stock-ctrl-row">
+                          <button type="button" className="stock-ctrl-btn minus" onClick={() => { const cur = Number(editStockMap[p.id] ?? p.stock ?? 0); if (cur > 0) setEditStockMap((prev) => ({...prev, [p.id]: String(cur - 1)})); }}>−</button>
+                          <input className="stock-ctrl-input" type="number" min="0" value={editVal} onChange={(e) => setEditStockMap((prev) => ({...prev, [p.id]: e.target.value}))} />
+                          <button type="button" className="stock-ctrl-btn plus" onClick={() => { const cur = Number(editStockMap[p.id] ?? p.stock ?? 0); setEditStockMap((prev) => ({...prev, [p.id]: String(cur + 1)})); }}>+</button>
+                          <button type="button" className={`stock-save-btn ${savedStockMap[p.id] ? "saved" : ""}`} onClick={() => updateStockInline(p.id, Number(editVal))}>{savedStockMap[p.id] ? "✓ Saved" : "Save"}</button>
+                        </div>
+                        {editStockMap[p.id] !== undefined && delta !== 0 && (
+                          <div className="stock-delta-hint" style={{color: delta > 0 ? "#00875A" : "#F03D3D"}}>
+                            {delta > 0 ? `+${delta} will be added` : `${delta} will be removed`}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )
             ) : (
-              filtered.map((p) => {
-                const editVal = editStockMap[p.id] ?? String(p.stock ?? 0);
-                const delta = Number(editVal) - (p.stock ?? 0);
-                return (
-                  <div key={p.id} className="prod-card" style={{flexDirection:"column",alignItems:"stretch",gap:10}}>
-                    {/* Top row: image + info + delete */}
-                    <div style={{display:"flex",alignItems:"center",gap:12}}>
-                      <div className="prod-icon">
-                        {p.image_url
-                          ? <img src={p.image_url} alt={p.name} />
-                          : (p.stock ?? 0) < 5 ? "⚠️" : "🛍️"}
+              /* Search active — show master_products catalog results */
+              masterSearchLoading ? (
+                <div style={{textAlign:"center",padding:"40px 0",color:"#8A96B5",fontWeight:600}}>🔍 Searching catalog...</div>
+              ) : masterSearchResults.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-icon">🔍</div>
+                  <div className="empty-title">No products found</div>
+                  <div className="empty-sub">"{searchQuery}" is not in the catalog yet</div>
+                </div>
+              ) : (
+                <>
+                  {/* In inventory section */}
+                  {masterSearchResults.some(p => p.inInventory) && (
+                    <>
+                      <div style={{padding:"10px 14px 4px",fontSize:11,fontWeight:800,color:"#00875A",textTransform:"uppercase",letterSpacing:"0.5px"}}>
+                        ✅ In Your Inventory ({masterSearchResults.filter(p=>p.inInventory).length})
                       </div>
-                      <div className="prod-info">
-                        <div className="prod-name">{p.name ?? "Unnamed"}</div>
-                        {p.size && <div style={{fontSize:"11px",color:"#8A96B5",fontWeight:600,marginBottom:3}}>{p.size}</div>}
-                        <div className="prod-meta">
-                          <span className="prod-price">₹{p.price}</span>
-                          <span className={`stock-badge ${(p.stock ?? 0) < 5 ? "stock-low" : "stock-ok"}`}>{p.stock ?? 0} in stock</span>
+                      {masterSearchResults.filter(p => p.inInventory).map((mp) => {
+                        const p = mp.inventoryProduct;
+                        if (!p) return null;
+                        const editVal = editStockMap[p.id] ?? String(p.stock ?? 0);
+                        const delta = Number(editVal) - (p.stock ?? 0);
+                        return (
+                          <div key={p.id} className="prod-card" style={{flexDirection:"column",alignItems:"stretch",gap:10,borderLeft:"3px solid #00875A"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:12}}>
+                              <div className="prod-icon">
+                                {mp.image_url ? <img src={mp.image_url} alt={mp.name} /> : (p.stock ?? 0) < 5 ? "⚠️" : "🛍️"}
+                              </div>
+                              <div className="prod-info">
+                                <div className="prod-name">{p.name ?? mp.name}</div>
+                                {mp.size && <div style={{fontSize:"11px",color:"#8A96B5",fontWeight:600,marginBottom:3}}>{mp.size}</div>}
+                                <div className="prod-meta">
+                                  <span className="prod-price">₹{p.price}</span>
+                                  <span className={`stock-badge ${(p.stock ?? 0) < 5 ? "stock-low" : "stock-ok"}`}>{p.stock ?? 0} in stock</span>
+                                </div>
+                              </div>
+                              <button className="del-btn" onClick={() => deleteProduct(p.id)}>🗑️</button>
+                            </div>
+                            <div>
+                              <div style={{fontSize:"10px",fontWeight:800,color:"#8A96B5",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:6}}>Update Stock</div>
+                              <div className="stock-ctrl-row">
+                                <button type="button" className="stock-ctrl-btn minus" onClick={() => { const cur = Number(editStockMap[p.id] ?? p.stock ?? 0); if (cur > 0) setEditStockMap((prev) => ({...prev, [p.id]: String(cur - 1)})); }}>−</button>
+                                <input className="stock-ctrl-input" type="number" min="0" value={editVal} onChange={(e) => setEditStockMap((prev) => ({...prev, [p.id]: e.target.value}))} />
+                                <button type="button" className="stock-ctrl-btn plus" onClick={() => { const cur = Number(editStockMap[p.id] ?? p.stock ?? 0); setEditStockMap((prev) => ({...prev, [p.id]: String(cur + 1)})); }}>+</button>
+                                <button type="button" className={`stock-save-btn ${savedStockMap[p.id] ? "saved" : ""}`} onClick={() => updateStockInline(p.id, Number(editVal))}>{savedStockMap[p.id] ? "✓ Saved" : "Save"}</button>
+                              </div>
+                              {editStockMap[p.id] !== undefined && delta !== 0 && (
+                                <div className="stock-delta-hint" style={{color: delta > 0 ? "#00875A" : "#F03D3D"}}>
+                                  {delta > 0 ? `+${delta} will be added` : `${delta} will be removed`}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
+                  {/* Not in inventory section */}
+                  {masterSearchResults.some(p => !p.inInventory) && (
+                    <>
+                      <div style={{padding:"10px 14px 4px",fontSize:11,fontWeight:800,color:"#8A96B5",textTransform:"uppercase",letterSpacing:"0.5px"}}>
+                        📦 Catalog — Not in Your Shop ({masterSearchResults.filter(p=>!p.inInventory).length})
+                      </div>
+                      {masterSearchResults.filter(p => !p.inInventory).map((mp) => (
+                        <div key={mp.id} className="prod-card" style={{flexDirection:"column",gap:10}}>
+                          {/* Product info row */}
+                          <div style={{display:"flex",alignItems:"center",gap:12}}>
+                            <div className="prod-icon">
+                              {mp.image_url ? <img src={mp.image_url} alt={mp.name} /> : "🛍️"}
+                            </div>
+                            <div className="prod-info" style={{flex:1}}>
+                              <div className="prod-name">{mp.name}</div>
+                              {mp.size && <div style={{fontSize:"11px",color:"#8A96B5",fontWeight:600,marginBottom:2}}>{mp.size}</div>}
+                              {mp.brand && <div style={{fontSize:"11px",color:"#B0BACC",fontWeight:500}}>{mp.brand}</div>}
+                              <div style={{fontSize:"11px",color:"#8A96B5",marginTop:1}}>{mp.category}</div>
+                            </div>
+                            {quickAddId !== mp.id && (
+                              <button
+                                style={{padding:"8px 14px",background:"#1A6BFF",color:"white",border:"none",borderRadius:8,fontSize:12,fontWeight:800,cursor:"pointer",fontFamily:"inherit",flexShrink:0}}
+                                onClick={() => { setQuickAddId(mp.id); setQuickAddPrice(""); setQuickAddStock(""); }}
+                              >+ Add</button>
+                            )}
+                          </div>
+                          {/* Inline quick-add form — expands when + Add is clicked */}
+                          {quickAddId === mp.id && (
+                            <div style={{background:"#F4F6FB",borderRadius:10,padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
+                              <div style={{fontSize:12,fontWeight:800,color:"#0D1B3E",marginBottom:2}}>Set price & stock to add to your inventory</div>
+                              <div style={{display:"flex",gap:10}}>
+                                <div style={{flex:1}}>
+                                  <div style={{fontSize:10,fontWeight:800,color:"#8A96B5",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>Price (₹)</div>
+                                  <div style={{display:"flex",alignItems:"center",background:"white",border:"1.5px solid #E4EAFF",borderRadius:8,overflow:"hidden"}}>
+                                    <span style={{padding:"0 8px",color:"#8A96B5",fontWeight:700,fontSize:13}}>₹</span>
+                                    <input
+                                      type="number" min="0" step="0.01" placeholder="0.00"
+                                      value={quickAddPrice}
+                                      onChange={e => setQuickAddPrice(e.target.value)}
+                                      style={{flex:1,border:"none",outline:"none",padding:"10px 8px 10px 0",fontSize:14,fontWeight:700,color:"#0D1B3E",fontFamily:"inherit",background:"transparent"}}
+                                      autoFocus
+                                    />
+                                  </div>
+                                </div>
+                                <div style={{flex:1}}>
+                                  <div style={{fontSize:10,fontWeight:800,color:"#8A96B5",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>Stock Qty</div>
+                                  <input
+                                    type="number" min="0" placeholder="0"
+                                    value={quickAddStock}
+                                    onChange={e => setQuickAddStock(e.target.value)}
+                                    style={{width:"100%",border:"1.5px solid #E4EAFF",borderRadius:8,padding:"10px 12px",fontSize:14,fontWeight:700,color:"#0D1B3E",fontFamily:"inherit",outline:"none",boxSizing:"border-box" as const,background:"white"}}
+                                  />
+                                </div>
+                              </div>
+                              <div style={{display:"flex",gap:8}}>
+                                <button
+                                  style={{flex:1,padding:"11px",background:"#1A6BFF",color:"white",border:"none",borderRadius:8,fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"inherit",opacity:quickAddLoading?0.6:1}}
+                                  onClick={() => quickAddProduct(mp)}
+                                  disabled={quickAddLoading}
+                                >
+                                  {quickAddLoading ? "Saving..." : "✓ Save to Inventory"}
+                                </button>
+                                <button
+                                  style={{padding:"11px 14px",background:"white",border:"1.5px solid #E4EAFF",borderRadius:8,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit",color:"#8A96B5"}}
+                                  onClick={() => { setQuickAddId(null); setQuickAddPrice(""); setQuickAddStock(""); }}
+                                >Cancel</button>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      </div>
-                      <button className="del-btn" onClick={() => deleteProduct(p.id)}>🗑️</button>
-                    </div>
-                    {/* Stock controls */}
-                    <div>
-                      <div style={{fontSize:"10px",fontWeight:800,color:"#8A96B5",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:6}}>Update Stock</div>
-                      <div className="stock-ctrl-row">
-                        <button
-                          type="button"
-                          className="stock-ctrl-btn minus"
-                          onClick={() => {
-                            const cur = Number(editStockMap[p.id] ?? p.stock ?? 0);
-                            if (cur > 0) setEditStockMap((prev) => ({...prev, [p.id]: String(cur - 1)}));
-                          }}
-                        >−</button>
-                        <input
-                          className="stock-ctrl-input"
-                          type="number"
-                          min="0"
-                          value={editVal}
-                          onChange={(e) => setEditStockMap((prev) => ({...prev, [p.id]: e.target.value}))}
-                        />
-                        <button
-                          type="button"
-                          className="stock-ctrl-btn plus"
-                          onClick={() => {
-                            const cur = Number(editStockMap[p.id] ?? p.stock ?? 0);
-                            setEditStockMap((prev) => ({...prev, [p.id]: String(cur + 1)}));
-                          }}
-                        >+</button>
-                        <button
-                          type="button"
-                          className={`stock-save-btn ${savedStockMap[p.id] ? "saved" : ""}`}
-                          onClick={() => updateStockInline(p.id, Number(editVal))}
-                        >
-                          {savedStockMap[p.id] ? "✓ Saved" : "Save"}
-                        </button>
-                      </div>
-                      {editStockMap[p.id] !== undefined && delta !== 0 && (
-                        <div className="stock-delta-hint" style={{color: delta > 0 ? "#00875A" : "#F03D3D"}}>
-                          {delta > 0 ? `+${delta} will be added` : `${delta} will be removed`}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
+                      ))}
+                    </>
+                  )}
+                </>
+              )
             )}
           </>
         )}
@@ -1137,7 +1355,18 @@ export default function ShopDashboard() {
       <nav className="bottom-nav">
         <a href="/shop-dashboard" className="nav-item active"><div className="nav-icon">🏠</div>Home</a>
         <a href="/add-product" className="nav-item"><div className="nav-icon">➕</div>Add</a>
-        <a href="/shop-orders" className="nav-item"><div className="nav-icon">📋</div>Orders</a>
+        <a href="/shop-orders" className="nav-item" style={{position:"relative"}}>
+          <div style={{position:"relative",display:"inline-block"}}>
+            <div className="nav-icon">📋</div>
+            {pendingCount > 0 && (
+              <span style={{position:"absolute",top:-4,right:-6,background:"#E53E3E",color:"white",fontSize:9,fontWeight:900,borderRadius:8,padding:"1px 5px",minWidth:16,textAlign:"center",lineHeight:"16px"}}>
+                {pendingCount > 9 ? "9+" : pendingCount}
+              </span>
+            )}
+          </div>
+          Orders
+        </a>
+        <a href="/riders" className="nav-item"><div className="nav-icon">🛵</div>Riders</a>
         <a href="/help" className="nav-item"><div className="nav-icon">💬</div>Help</a>
       </nav>
     </div>

@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 
@@ -44,11 +44,207 @@ const CSS = `
 .info-banner { background: #FFF8E6; border: 1.5px solid #FFB800; border-radius: 12px; padding: 12px 14px; font-size: 12px; font-weight: 600; color: #946200; margin-bottom: 16px; }
 `;
 
-type Step = "details" | "phone" | "otp" | "shopfront" | "done";
+type Step = "details" | "phone" | "otp" | "location" | "shopfront" | "done";
+
+function LocationStep({ onConfirm }: { onConfirm: (lat: number, lng: number, addr: string, instructions: string) => void }) {
+  const mapRef = useRef<any>(null);
+  const [lat, setLat] = useState(29.2183);
+  const [lng, setLng] = useState(79.5130);
+  const [address, setAddress] = useState("");
+  const [instructions, setInstructions] = useState("");
+  const [fetching, setFetching] = useState(false);
+
+  useEffect(() => {
+    // Prevent body scroll while map is open
+    document.body.style.overflow = "hidden";
+    loadLeaflet();
+    return () => {
+      document.body.style.overflow = "";
+      try { mapRef.current?.remove(); mapRef.current = null; } catch {}
+    };
+  }, []);
+
+  function loadLeaflet() {
+    if ((window as any).L) { initMap(); return; }
+    if (!document.querySelector('link[href*="leaflet"]')) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
+    if (!document.querySelector('script[src*="leaflet"]')) {
+      const script = document.createElement("script");
+      script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+      script.onload = () => setTimeout(initMap, 100);
+      document.head.appendChild(script);
+    } else {
+      setTimeout(initMap, 200);
+    }
+  }
+
+  function initMap() {
+    const L = (window as any).L;
+    const el = document.getElementById("shop-loc-map");
+    if (!L || !el) { setTimeout(initMap, 200); return; }
+    if (mapRef.current) { try { mapRef.current.remove(); } catch {} mapRef.current = null; }
+    const map = L.map("shop-loc-map", { zoomControl: true }).setView([lat, lng], 17);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap", maxZoom: 19
+    }).addTo(map);
+    mapRef.current = map;
+    map.on("moveend", () => {
+      const center = map.getCenter();
+      setLat(center.lat);
+      setLng(center.lng);
+      reverseGeocode(center.lat, center.lng);
+    });
+    // Auto-locate
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(pos => {
+        const { latitude, longitude } = pos.coords;
+        map.setView([latitude, longitude], 18);
+        setLat(latitude); setLng(longitude);
+        reverseGeocode(latitude, longitude);
+      }, () => reverseGeocode(lat, lng));
+    } else {
+      reverseGeocode(lat, lng);
+    }
+  }
+
+  async function reverseGeocode(lt: number, lg: number) {
+    setFetching(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?lat=${lt}&lon=${lg}&format=json&addressdetails=1`,
+        { headers: { "Accept-Language": "en" } }
+      );
+      const data = await res.json();
+      if (data.address) {
+        const a = data.address;
+        const parts = [
+          a.house_number, a.road || a.street,
+          a.neighbourhood || a.suburb,
+          a.city || a.town || a.village,
+          a.state, a.postcode
+        ].filter(Boolean);
+        setAddress(parts.join(", "));
+      }
+    } catch { }
+    setFetching(false);
+  }
+
+  function locateMe() {
+    if (!navigator.geolocation || !mapRef.current) return;
+    navigator.geolocation.getCurrentPosition(pos => {
+      mapRef.current.setView([pos.coords.latitude, pos.coords.longitude], 18);
+    });
+  }
+
+  // Full-screen overlay styles
+  const overlayStyle: React.CSSProperties = {
+    position: "fixed", inset: 0, zIndex: 9999,
+    background: "#fff", display: "flex", flexDirection: "column",
+    fontFamily: "'Plus Jakarta Sans', sans-serif",
+  };
+
+  return (
+    <div style={overlayStyle}>
+      {/* Header */}
+      <div style={{ background: "#1A6BFF", padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+        <div style={{ fontSize: 16, fontWeight: 900, color: "white", flex: 1 }}>📍 Pin Your Shop Location</div>
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.75)", fontWeight: 600 }}>Step 4 of 5</div>
+      </div>
+
+      {/* Instruction */}
+      <div style={{ background: "#EBF1FF", padding: "10px 16px", fontSize: 12, fontWeight: 600, color: "#1A6BFF", flexShrink: 0 }}>
+        Drag the map so the 📍 pin is exactly on your shop entrance
+      </div>
+
+      {/* Map — fills all available space */}
+      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+        <div id="shop-loc-map" style={{ position: "absolute", inset: 0 }} />
+        {/* Fixed center pin */}
+        <div style={{
+          position: "absolute", top: "50%", left: "50%",
+          transform: "translate(-50%, -100%)", zIndex: 1000,
+          fontSize: 36, pointerEvents: "none",
+          filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.35))"
+        }}>📍</div>
+        {/* Locate me button */}
+        <button onClick={locateMe} style={{
+          position: "absolute", bottom: 16, right: 16, zIndex: 1000,
+          width: 48, height: 48, background: "white", border: "none",
+          borderRadius: "50%", fontSize: 20, boxShadow: "0 4px 14px rgba(0,0,0,0.18)",
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center"
+        }}>🎯</button>
+      </div>
+
+      {/* Bottom panel */}
+      <div style={{ background: "white", padding: "16px 16px 32px", boxShadow: "0 -8px 24px rgba(0,0,0,0.1)", flexShrink: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#8A96B5", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>
+          Detected Address
+        </div>
+        <div style={{
+          fontSize: 14, fontWeight: 700, color: address ? "#0D1B3E" : "#B0BACC",
+          minHeight: 40, lineHeight: 1.5, marginBottom: 4
+        }}>
+          {fetching ? "📡 Detecting address..." : address || "Move the map to your shop location"}
+        </div>
+        {address && (
+          <div style={{ fontSize: 11, color: "#B0BACC", marginBottom: 12 }}>
+            📌 {lat.toFixed(5)}, {lng.toFixed(5)}
+          </div>
+        )}
+        {/* Shop address instructions — required */}
+        <div style={{ padding: "0 16px 4px" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "#8A96B5", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+            Shop Address Details
+            <span style={{ background: "#FFF0F0", color: "#E53E3E", fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4 }}>Required</span>
+          </div>
+          <textarea
+            rows={3}
+            placeholder={"House/shop no., floor, building name, landmark, colony...\ne.g. Shop 12, Ground Floor, Radha Krishna Market, Near SBI Bank"}
+            value={instructions}
+            onChange={e => setInstructions(e.target.value)}
+            style={{
+              width: "100%", padding: "10px 12px", border: instructions.trim() ? "2px solid #00B37E" : "2px solid #E4EAFF",
+              borderRadius: 10, fontSize: 13, fontWeight: 500, color: "#0D1B3E",
+              fontFamily: "'Plus Jakarta Sans', sans-serif", resize: "none", outline: "none",
+              background: instructions.trim() ? "#F0FBF7" : "white", lineHeight: 1.5,
+              boxSizing: "border-box" as const, marginBottom: 12, transition: "border-color 0.2s"
+            }}
+          />
+        </div>
+        <button
+          disabled={fetching || !address || !instructions.trim()}
+          onClick={() => {
+            if (!instructions.trim()) { alert("Please fill in the shop address details (house no., landmark, etc.)"); return; }
+            onConfirm(lat, lng, address, instructions);
+          }}
+          style={{
+            width: "100%", padding: 15, background: address && instructions.trim() && !fetching ? "#1A6BFF" : "#E4EAFF",
+            color: address && instructions.trim() && !fetching ? "white" : "#B0BACC",
+            border: "none", borderRadius: 14, fontSize: 16, fontWeight: 800,
+            cursor: address && instructions.trim() && !fetching ? "pointer" : "not-allowed",
+            fontFamily: "'Plus Jakarta Sans', sans-serif", transition: "all 0.2s"
+          }}
+        >
+          {fetching ? "Detecting address..." : !address ? "Move map to your shop" : !instructions.trim() ? "Fill shop address details to continue" : "✓ Confirm Shop Location →"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function ShopSignup() {
   const router = useRouter();
   const [step, setStep] = useState<Step>("details");
+  const [shopLat, setShopLat] = useState<number|null>(null);
+  const [shopInstructions, setShopInstructions] = useState("");
+  const [shopLng, setShopLng] = useState<number|null>(null);
+  const [shopAddress, setShopAddress] = useState("");
+  const [mapReady, setMapReady] = useState(false);
+  const [mapRef, setMapRef] = useState<any>(null);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -63,7 +259,7 @@ export default function ShopSignup() {
   const [userId, setUserId] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fullPhone = "+91" + phone.replace(/\D/g, "");
-  const stepNum = step === "details" ? 1 : step === "phone" ? 2 : step === "otp" ? 3 : step === "shopfront" ? 4 : 4;
+  const stepNum = step === "details" ? 1 : step === "phone" ? 2 : step === "otp" ? 3 : step === "location" ? 4 : step === "shopfront" ? 5 : 5;
 
   function startTimer() {
     setResendTimer(30);
@@ -73,6 +269,15 @@ export default function ShopSignup() {
   async function sendOtp() {
     if (phone.replace(/\D/g, "").length < 10) { alert("Enter a valid 10-digit phone number"); return; }
     setLoading(true);
+    // Check for existing shopkeeper account with same number
+    const { data: existing } = await supabase
+      .from("profiles").select("id, role").eq("phone", fullPhone);
+    const alreadyShopkeeper = (existing || []).find((p: any) => p.role === "shopkeeper");
+    if (alreadyShopkeeper) {
+      alert("A shopkeeper account already exists with this number. Please log in instead.");
+      setLoading(false);
+      return;
+    }
     const { error } = await supabase.auth.signInWithOtp({ phone: fullPhone });
     if (error) { alert("Could not send OTP: " + error.message); setLoading(false); return; }
     setLoading(false); startTimer(); setStep("otp");
@@ -94,7 +299,7 @@ export default function ShopSignup() {
     });
     if (pe) { alert("Profile error: " + pe.message); setLoading(false); return; }
     setLoading(false);
-    setStep("shopfront");
+    setStep("location");
   }
 
   async function uploadShopfront() {
@@ -117,7 +322,7 @@ export default function ShopSignup() {
         <div style={{ fontSize: 24, fontWeight: 900, color: "white", letterSpacing: "-0.5px" }}>Bubbry Shop</div>
         <div style={{ fontSize: 12, color: "rgba(255,255,255,0.65)", marginTop: 4, marginBottom: 12 }}>Sell to customers near you</div>
         <div className="step-dots">
-          {[1,2,3,4].map(i => <div key={i} className={`dot ${i === stepNum ? "active" : i < stepNum ? "done" : ""}`} />)}
+          {[1,2,3,4,5].map(i => <div key={i} className={`dot ${i === stepNum ? "active" : i < stepNum ? "done" : ""}`} />)}
         </div>
       </div>
       <div style={{ padding: "32px 24px 60px", maxWidth: 420, margin: "0 auto" }}>
@@ -172,6 +377,28 @@ export default function ShopSignup() {
             <button className="auth-btn secondary" style={{ marginTop: 10 }} onClick={() => { setStep("phone"); setOtp(""); }}>← Change Number</button>
           </>}
 
+          {step === "location" && (
+            <LocationStep
+              onConfirm={async (lat, lng, addr, instructions) => {
+                setShopLat(lat); setShopLng(lng); setShopAddress(addr);
+                setShopInstructions(instructions);
+                // Save location immediately to DB — this is the critical step
+                if (userId) {
+                  const { error: locErr } = await supabase.from("profiles").update({
+                    latitude: lat,
+                    longitude: lng,
+                    default_address: addr,
+                    delivery_instructions: instructions,
+                  }).eq("id", userId);
+                  if (locErr) {
+                    alert("Failed to save location: " + locErr.message);
+                    return;
+                  }
+                }
+                setStep("shopfront");
+              }}
+            />
+          )}
           {step === "shopfront" && <>
             <div style={{ fontSize: 17, fontWeight: 800, color: "#0D1B3E", marginBottom: 6 }}>Shop Photo</div>
             <div className="info-banner">⚠️ Upload a clear photo of your shopfront. An admin will review and approve it before you can go live.</div>
