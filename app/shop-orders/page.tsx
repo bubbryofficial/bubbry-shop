@@ -358,14 +358,16 @@ export default function ShopOrders() {
         // Go shop offline immediately
         await supabase.from("profiles").update({ is_live: false }).eq("id", shopId);
         // Log dispute for refund tracking
-        await supabase.from("disputes").insert({
-          order_id: order.id,
-          shop_id: shopId,
-          reason: "shop_timeout",
-          note: "Order auto-cancelled: shop did not respond within 15 minutes. Shop set offline automatically.",
-          status: "open",
-          reported_by: "system",
-        }).catch(() => {});
+        try {
+          await supabase.from("disputes").insert({
+            order_id: order.id,
+            shop_id: shopId,
+            reason: "shop_timeout",
+            note: "Order auto-cancelled: shop did not respond within 15 minutes. Shop set offline automatically.",
+            status: "open",
+            reported_by: "system",
+          });
+        } catch {}
         // Notify shop
         await sendNotification(shopId,
           "⏰ Order Auto-Cancelled — Shop Offline",
