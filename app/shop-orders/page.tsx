@@ -492,7 +492,6 @@ export default function ShopOrders() {
             refund_screenshot: order.refund_screenshot || null,
             customer_id: order.customer_id || null,
             rider_id: order.rider_id || null,
-            customer_id: order.customer_id || null,
             payment_proof: order.payment_proof,
             payment_method: order.payment_method,
             amount_paid: order.amount_paid || 0,
