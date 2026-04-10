@@ -367,7 +367,7 @@ export default function ShopOrders() {
 
       const { data: ordersData, error } = await supabase
         .from("orders")
-        .select("id, group_id, quantity, customer_id, order_type, delivery_address, status, created_at, product_id, shop_id, handoff_photo, product_photo, payment_proof, payment_method, amount_paid, amount_cash, delivery_otp, cancellation_reason, cancelled_by, refund_upi, refund_screenshot, cancellation_proof, customer_id, rider_id")
+        .select("id, group_id, quantity, customer_id, order_type, delivery_address, status, created_at, product_id, shop_id, handoff_photo, product_photo, payment_proof, payment_method, amount_paid, amount_cash, delivery_otp, cancellation_reason, cancelled_by, refund_upi, refund_screenshot, cancellation_proof, rider_id")
         .eq("shop_id", user.id)
         .order("created_at", { ascending: false });
 
@@ -408,7 +408,6 @@ export default function ShopOrders() {
             refund_screenshot: order.refund_screenshot || null,
             customer_id: order.customer_id || null,
             rider_id: order.rider_id || null,
-            customer_id: order.customer_id || null,
             payment_proof: order.payment_proof,
             payment_method: order.payment_method,
             amount_paid: order.amount_paid || 0,
