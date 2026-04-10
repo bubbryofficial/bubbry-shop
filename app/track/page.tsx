@@ -1,12 +1,8 @@
 "use client";
+import { supabase } from "../../lib/supabase";
 import { useEffect, useRef, useState, Suspense } from "react";
-import { createClient } from "@supabase/supabase-js";
 import { useSearchParams } from "next/navigation";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');

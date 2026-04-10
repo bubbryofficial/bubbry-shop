@@ -1,13 +1,9 @@
 "use client";
+import { supabase } from "../../lib/supabase";
 
 import { useState, useEffect, useRef } from "react";
-import { createClient } from "@supabase/supabase-js";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
@@ -292,8 +288,6 @@ export default function ShopDashboard() {
     if (error) { alert("Failed to save: " + error.message); } else { alert("UPI ID saved! ✓"); }
   }
 
-  const [pendingCount, setPendingCount] = useState(0);
-
   async function loadShopStatus(userId?: string) {
     let uid = userId;
     if (!uid) {
@@ -307,14 +301,6 @@ export default function ShopDashboard() {
       .eq("id", uid)
       .single();
     if (error) { console.log("loadShopStatus error:", error.message); return; }
-    // Fetch pending order count for badge
-    if (userId) {
-      const { count } = await supabase.from("orders")
-        .select("id", { count: "exact", head: true })
-        .eq("shop_id", userId)
-        .eq("status", "pending");
-      setPendingCount(count || 0);
-    }
     if (data) {
       // Check if auto-offline period has expired — if so, clear it
       if (data.auto_offlined_until) {
@@ -1355,17 +1341,7 @@ export default function ShopDashboard() {
       <nav className="bottom-nav">
         <a href="/shop-dashboard" className="nav-item active"><div className="nav-icon">🏠</div>Home</a>
         <a href="/add-product" className="nav-item"><div className="nav-icon">➕</div>Add</a>
-        <a href="/shop-orders" className="nav-item" style={{position:"relative"}}>
-          <div style={{position:"relative",display:"inline-block"}}>
-            <div className="nav-icon">📋</div>
-            {pendingCount > 0 && (
-              <span style={{position:"absolute",top:-4,right:-6,background:"#E53E3E",color:"white",fontSize:9,fontWeight:900,borderRadius:8,padding:"1px 5px",minWidth:16,textAlign:"center",lineHeight:"16px"}}>
-                {pendingCount > 9 ? "9+" : pendingCount}
-              </span>
-            )}
-          </div>
-          Orders
-        </a>
+        <a href="/shop-orders" className="nav-item" style={{position:"relative"}}><div className="nav-icon">📋</div>Orders</a>
         <a href="/riders" className="nav-item"><div className="nav-icon">🛵</div>Riders</a>
         <a href="/help" className="nav-item"><div className="nav-icon">💬</div>Help</a>
       </nav>

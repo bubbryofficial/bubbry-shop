@@ -1,12 +1,8 @@
 "use client";
+import { supabase } from "../../lib/supabase";
 
 import { useState, useEffect, useRef } from "react";
-import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
@@ -23,17 +19,7 @@ body { font-family: 'Plus Jakarta Sans', sans-serif; background: #F4F6FB; }
 .order-card { background: white; border-radius: 16px; border: 1.5px solid #E4EAFF; margin-bottom: 12px; overflow: hidden; box-shadow: 0 2px 10px rgba(26,107,255,0.06); }
 .order-hdr { padding: 12px 16px; border-bottom: 1px solid #F4F6FB; display: flex; align-items: center; justify-content: space-between; }
 .order-id { font-size: 12px; color: #8A96B5; font-weight: 700; font-family: monospace; }
-.order-time { font-size: 11px; color: #B0BACC; line-height: 1.5; display: block; }
-.timer-bar-wrap { margin: 8px 0 6px; }
-.timer-bar-bg { width: 100%; height: 6px; background: #F4F6FB; border-radius: 4px; overflow: hidden; }
-.timer-bar-fill { height: 6px; border-radius: 4px; transition: width 1s linear, background 0.5s; }
-.timer-label { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 11px; font-weight: 700; }
-.timer-urgent { color: #E53E3E; }
-.timer-warn { color: #D97706; }
-.timer-ok { color: #00875A; }
-.escalation-box { background: #0D1B3E; border-radius: 10px; padding: 10px 12px; margin-top: 8px; }
-.escalation-title { font-size: 12px; font-weight: 900; color: #FF6B6B; margin-bottom: 4px; }
-.escalation-text { font-size: 11px; color: rgba(255,255,255,0.75); line-height: 1.5; }
+.order-time { font-size: 11px; color: #B0BACC; }
 .order-body { padding: 14px 16px; }
 .order-product { font-size: 16px; font-weight: 800; color: #0D1B3E; margin-bottom: 6px; }
 .order-detail { font-size: 13px; color: #4A5880; font-weight: 500; margin-bottom: 3px; display: flex; align-items: center; gap: 6px; }
@@ -190,62 +176,8 @@ function PickupOtpVerify({ order, onVerified }: { order: any; onVerified: () => 
   );
 }
 
-function OrderTimer({ createdAt, status }: { createdAt: string; status: string }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 10000); // update every 10s
-    return () => clearInterval(t);
-  }, []);
-
-  const LIMIT = 15 * 60 * 1000;
-  const elapsed = now - new Date(createdAt).getTime();
-  const remaining = Math.max(0, LIMIT - elapsed);
-  const pct = Math.min(100, (elapsed / LIMIT) * 100);
-  const minsLeft = Math.floor(remaining / 60000);
-  const secsLeft = Math.floor((remaining % 60000) / 1000);
-  const isExpired = remaining === 0;
-  const isUrgent = remaining < 3 * 60 * 1000;   // < 3 min
-  const isWarn   = remaining < 8 * 60 * 1000;   // < 8 min
-
-  const barColor = isExpired ? "#E53E3E"
-    : isUrgent ? "#E53E3E"
-    : isWarn   ? "#D97706"
-    : "#00875A";
-
-  const labelClass = isUrgent ? "timer-urgent" : isWarn ? "timer-warn" : "timer-ok";
-
-  // Only show for pending and ready statuses
-  if (status !== "pending" && status !== "ready") return null;
-
-  return (
-    <div className="timer-bar-wrap">
-      <div className="timer-bar-bg">
-        <div className="timer-bar-fill" style={{ width: `${pct}%`, background: barColor }} />
-      </div>
-      <div className="timer-label">
-        <span className={labelClass}>
-          {isExpired
-            ? "⏰ Time's up — Bubbry team notified"
-            : `⏱ ${minsLeft}m ${secsLeft}s to ${status === "pending" ? "accept" : "dispatch"}`}
-        </span>
-        <span style={{ color: "#B0BACC" }}>15 min limit</span>
-      </div>
-      {isExpired && (
-        <div className="escalation-box">
-          <div className="escalation-title">🚨 Action Required</div>
-          <div className="escalation-text">
-            You haven't updated this order in time. The Bubbry team will contact you.<br/>
-            <strong style={{color:"#FF6B6B"}}>3 missed calls = order auto-cancelled + shop goes offline + full refund to customer.</strong>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function ShopOrders() {
   const [orders, setOrders] = useState<any[]>([]);
-  const [tick, setTick] = useState(0); // increments every 60s to re-render elapsed labels
   const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const shopUserIdRef = useRef<string>(""); // current shop user id for timers
@@ -287,8 +219,6 @@ export default function ShopOrders() {
     });
     fetchOrders();
     loadRiders();
-    // Tick every 60s to refresh elapsed time labels
-    const ticker = setInterval(() => setTick((t:number) => t + 1), 60000);
     // Realtime — any order change triggers immediate refresh
     const channel = supabase.channel("shop-orders-rt")
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => {
@@ -351,27 +281,13 @@ export default function ShopOrders() {
             status: "cancelled",
             cancelled_by: "system",
             cancellation_reason: "shop_timeout",
-            cancellation_note: "Shop did not accept the order within 15 minutes. Refund due to customer.",
+            cancellation_note: "Shop did not accept the order within 15 minutes.",
             cancelled_at: new Date().toISOString(),
           }).eq("id", id);
         }
-        // Go shop offline immediately
-        await supabase.from("profiles").update({ is_live: false }).eq("id", shopId);
-        // Log dispute for refund tracking
-        try {
-          await supabase.from("disputes").insert({
-            order_id: order.id,
-            shop_id: shopId,
-            reason: "shop_timeout",
-            note: "Order auto-cancelled: shop did not respond within 15 minutes. Shop set offline automatically.",
-            status: "open",
-            reported_by: "system",
-          });
-        } catch {}
-        // Notify shop
         await sendNotification(shopId,
-          "⏰ Order Auto-Cancelled — Shop Offline",
-          "An order was auto-cancelled because you didn't respond in 15 minutes. Your shop has been set OFFLINE. Refund the customer and contact Bubbry support to go live again.",
+          "⏰ Order Auto-Cancelled",
+          "An order was automatically cancelled because you didn't mark it ready within 15 minutes.",
           "auto_cancel", "/shop-orders"
         );
         notifSentRef.current.delete(key);
@@ -492,6 +408,7 @@ export default function ShopOrders() {
             refund_screenshot: order.refund_screenshot || null,
             customer_id: order.customer_id || null,
             rider_id: order.rider_id || null,
+            customer_id: order.customer_id || null,
             payment_proof: order.payment_proof,
             payment_method: order.payment_method,
             amount_paid: order.amount_paid || 0,
@@ -613,7 +530,7 @@ export default function ShopOrders() {
     }
     fetchOrders();
     if (pickupOtp) {
-      alert("✓ Order is ready! The customer will see their pickup OTP in My Orders. Ask them to show it when they collect.");
+      alert(`Order is ready!\n\nPickup OTP: ${pickupOtp}\n\nCustomer must show this OTP when collecting their order.`);
     }
   }
 
@@ -951,22 +868,12 @@ export default function ShopOrders() {
     fetchOrders();
   }
 
-  function formatIST(date: string) {
-    // Display full IST date and time
-    return new Date(date).toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      day: "2-digit", month: "short", year: "numeric",
-      hour: "2-digit", minute: "2-digit", hour12: true,
-    });
-  }
-
-  function elapsedLabel(date: string) {
+  function timeAgo(date: string) {
     const diff = Date.now() - new Date(date).getTime();
     const mins = Math.floor(diff / 60000);
-    if (mins < 1) return "just now";
     if (mins < 60) return `${mins}m ago`;
     const hrs = Math.floor(mins / 60);
-    if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
+    if (hrs < 24) return `${hrs}h ago`;
     return `${Math.floor(hrs / 24)}d ago`;
   }
 
@@ -1009,12 +916,10 @@ export default function ShopOrders() {
                     <span className={`type-badge ${order.order_type === "delivery" ? "type-delivery" : "type-pickup"}`}>
                       {order.order_type === "delivery" ? "🛵" : "🏃"} {order.order_type}
                     </span>
-                    <span className="order-time">{formatIST(order.created_at)}<br/><span style={{color:"#E53E3E",fontWeight:700}}>{elapsedLabel(order.created_at)}</span></span>
+                    <span className="order-time">{timeAgo(order.created_at)}</span>
                   </div>
                 </div>
                 <div className="order-body">
-                  {/* 15-min countdown timer */}
-                  <OrderTimer createdAt={order.created_at} status={status} />
                   {/* Items list */}
                   <div style={{marginBottom:10}}>
                     {(order.items || []).map((item: any, idx: number) => (
