@@ -1,7 +1,7 @@
 "use client";
 import { supabase } from "../../lib/supabase";
 
-import { useState } from "react";
+import { useState, useEffect, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 
@@ -29,6 +29,13 @@ body { font-family: 'Plus Jakarta Sans', sans-serif; }
 
 export default function Login() {
   const router = useRouter();
+
+  // Auto-redirect if already logged in
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) router.replace("/shop-dashboard");
+    });
+  }, []);
   const [loginMode, setLoginMode] = useState<"email" | "phone">("phone");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
