@@ -163,6 +163,19 @@ export default function AddProduct() {
         </div>
       </div>
 
+      {/* Loose product banner */}
+      <div style={{padding:"12px 16px 0",maxWidth:560,margin:"0 auto"}}>
+        <a href="/add-loose-product" style={{display:"flex",alignItems:"center",gap:10,padding:"14px 16px",background:"linear-gradient(135deg,#EBF1FF,#F4F7FF)",border:"1.5px solid #C5D5FF",borderRadius:14,textDecoration:"none",marginBottom:2}}>
+          <span style={{fontSize:26}}>🧺</span>
+          <div>
+            <div style={{fontSize:14,fontWeight:800,color:"#1A6BFF"}}>Add Loose / Bulk Product</div>
+            <div style={{fontSize:12,color:"#8A96B5",fontWeight:500}}>Atta, Rice, Dal, Oil — sold by kg or litre</div>
+          </div>
+          <span style={{marginLeft:"auto",color:"#1A6BFF",fontSize:18}}>→</span>
+        </a>
+        <div style={{textAlign:"center",fontSize:11,color:"#B0BACC",fontWeight:600,margin:"8px 0 0px"}}>— or search packaged products below —</div>
+      </div>
+
       <div className="content">
         {loading ? (
           <div className="loading-state">Searching products...</div>

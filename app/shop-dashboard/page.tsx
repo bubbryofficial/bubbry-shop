@@ -209,6 +209,9 @@ export default function ShopDashboard() {
   const [existingImgUrl, setExistingImgUrl] = useState<string>("");
   const [uploadingImg, setUploadingImg] = useState(false);
   const [isLive, setIsLive] = useState(false);
+  const [deliveryRange, setDeliveryRange] = useState(2);
+  const [pendingRange, setPendingRange] = useState(2);   // slider value before saving
+  const [rangeSaved, setRangeSaved] = useState(false);   // show saved feedback
   const [autoOfflinedUntil, setAutoOfflinedUntil] = useState<Date|null>(null);
   const [offersDelivery, setOffersDelivery] = useState(false);
   const [offersPickup, setOffersPickup] = useState(true);
@@ -279,6 +282,12 @@ export default function ShopDashboard() {
     window.location.href = "/login";
   }
 
+  async function saveDeliveryRange(km: number) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return;
+    await supabase.from("profiles").update({ delivery_range_km: km }).eq("id", session.user.id);
+  }
+
   async function saveUpi() {
     setSavingUpi(true);
     const { data: { session } } = await supabase.auth.getSession();
@@ -297,7 +306,7 @@ export default function ShopDashboard() {
     }
     const { data, error } = await supabase
       .from("profiles")
-      .select("is_live, offers_delivery, offers_pickup, shopfront_verified, shopfront_image, upi_id, shop_name, name, auto_offlined_until")
+      .select("is_live, offers_delivery, offers_pickup, shopfront_verified, shopfront_image, upi_id, shop_name, name, auto_offlined_until, delivery_range_km")
       .eq("id", uid)
       .single();
     if (error) { console.log("loadShopStatus error:", error.message); return; }
@@ -312,6 +321,9 @@ export default function ShopDashboard() {
         }
       }
       setIsLive(data.is_live === true);
+      const rng = data.delivery_range_km || 2;
+      setDeliveryRange(rng);
+      setPendingRange(rng);
       setAutoOfflinedUntil(data.auto_offlined_until ? new Date(data.auto_offlined_until) : null);
       setOffersDelivery(data.offers_delivery === true);
       setOffersPickup(data.offers_pickup === true || data.offers_pickup === null);
@@ -1337,6 +1349,67 @@ export default function ShopDashboard() {
           </div>
         </div>
       )}
+
+
+
+        {/* Delivery Range Card */}
+        {offersDelivery && (
+          <div className="card">
+            <div className="card-hdr">
+              <div className="card-hdr-icon">📍</div>
+              <div>
+                <div className="card-hdr-title">Delivery Range</div>
+                <div className="card-hdr-sub">Set how far you deliver</div>
+              </div>
+            </div>
+            <div style={{padding:"0 16px 16px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <span style={{fontSize:13,fontWeight:600,color:"#8A96B5"}}>500m</span>
+                <span style={{fontSize:18,fontWeight:900,color:"#1A6BFF"}}>{deliveryRange < 1 ? `${deliveryRange * 1000}m` : `${deliveryRange} km`}</span>
+                <span style={{fontSize:13,fontWeight:600,color:"#8A96B5"}}>2 km</span>
+              </div>
+              {/* Preset buttons */}
+              <div style={{display:"flex",justifyContent:"space-between",gap:6,marginBottom:12}}>
+                {[0.5,1,1.5,2].map(v => (
+                  <button key={v}
+                    onClick={() => { setPendingRange(v); setRangeSaved(false); }}
+                    style={{flex:1,padding:"10px 4px",borderRadius:10,border:"1.5px solid",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"inherit",
+                      borderColor: pendingRange===v ? "#1A6BFF" : "#E4EAFF",
+                      background: pendingRange===v ? "#EBF1FF" : "white",
+                      color: pendingRange===v ? "#1A6BFF" : "#8A96B5"}}>
+                    {v < 1 ? `${v*1000}m` : `${v}km`}
+                  </button>
+                ))}
+              </div>
+              {/* Slider */}
+              <input
+                type="range" min={0.5} max={2} step={0.5}
+                value={pendingRange}
+                onChange={e => { setPendingRange(parseFloat(e.target.value)); setRangeSaved(false); }}
+                style={{width:"100%",accentColor:"#1A6BFF",height:6,cursor:"pointer",marginBottom:12}}
+              />
+              {/* Info */}
+              <div style={{fontSize:12,color:"#8A96B5",fontWeight:500,background:"#F4F6FB",borderRadius:8,padding:"8px 12px",marginBottom:12}}>
+                🛵 Customers within <strong style={{color:"#0D1B3E"}}>{pendingRange < 1 ? `${pendingRange*1000}m` : `${pendingRange}km`}</strong> will see your shop and can place delivery orders.
+                {pendingRange !== deliveryRange && <span style={{color:"#E53E3E",fontWeight:700}}> (unsaved)</span>}
+              </div>
+              {/* Save button */}
+              <button
+                onClick={async () => {
+                  await saveDeliveryRange(pendingRange);
+                  setDeliveryRange(pendingRange);
+                  setRangeSaved(true);
+                  setTimeout(() => setRangeSaved(false), 3000);
+                }}
+                disabled={pendingRange === deliveryRange && !rangeSaved}
+                style={{width:"100%",padding:"12px",borderRadius:12,border:"none",fontSize:14,fontWeight:800,cursor:pendingRange===deliveryRange?"not-allowed":"pointer",fontFamily:"inherit",transition:"all 0.2s",
+                  background: rangeSaved ? "#00875A" : pendingRange===deliveryRange ? "#F4F6FB" : "#1A6BFF",
+                  color: pendingRange===deliveryRange && !rangeSaved ? "#B0BACC" : "white"}}>
+                {rangeSaved ? "✓ Saved!" : pendingRange===deliveryRange ? "No changes" : "💾 Save Delivery Range"}
+              </button>
+            </div>
+          </div>
+        )}
 
       <nav className="bottom-nav">
         <a href="/shop-dashboard" className="nav-item active"><div className="nav-icon">🏠</div>Home</a>
