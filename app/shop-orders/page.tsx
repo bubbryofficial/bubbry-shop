@@ -367,7 +367,7 @@ export default function ShopOrders() {
 
       const { data: ordersData, error } = await supabase
         .from("orders")
-        .select("id, group_id, quantity, customer_id, order_type, delivery_address, status, created_at, product_id, shop_id, handoff_photo, product_photo, payment_proof, payment_method, amount_paid, amount_cash, delivery_otp, cancellation_reason, cancelled_by, refund_upi, refund_screenshot, cancellation_proof, rider_id")
+        .select("id, group_id, quantity, customer_id, order_type, delivery_address, status, created_at, product_id, shop_id, handoff_photo, product_photo, payment_proof, payment_method, amount_paid, amount_cash, delivery_otp, cancellation_reason, cancelled_by, refund_upi, refund_screenshot, cancellation_proof, rider_id, loose_product_id, loose_product_name, loose_unit, loose_qty")
         .eq("shop_id", user.id)
         .order("created_at", { ascending: false });
 
@@ -388,7 +388,9 @@ export default function ShopOrders() {
       const groupMap: Record<string, any> = {};
       for (const order of ordersData) {
         const key = order.group_id || order.id;
-        const sp = spMap[order.product_id + "_" + order.shop_id] || {};
+        const sp = order.product_id
+          ? (spMap[order.product_id + "_" + order.shop_id] || {})
+          : (order.loose_product_id ? (spMap[order.loose_product_id + "_" + order.shop_id] || {}) : {});
 
         if (!groupMap[key]) {
           groupMap[key] = {
@@ -418,15 +420,30 @@ export default function ShopOrders() {
           };
         }
 
+        // For loose products: use stored name and price from order itself
+        const isLoose = !order.product_id && order.loose_product_name;
+        const loosePrice = isLoose ? ((order.amount_paid || 0) + (order.amount_cash || 0)) : 0;
+        const productName = isLoose
+          ? `${order.loose_product_name} (${order.loose_qty || ""}${order.loose_unit || "kg"})`
+          : (sp.name || "Product");
+        const itemPrice = isLoose ? loosePrice : (sp.price || 0);
+
         groupMap[key].items.push({
           id: order.id,
-          product_name: sp.name || "Product",
+          product_name: productName,
           quantity: order.quantity || 1,
-          price: sp.price || 0,
+          price: isLoose ? loosePrice : (sp.price || 0),
           product_id: order.product_id,
+          is_loose: isLoose,
+          loose_qty: order.loose_qty,
+          loose_unit: order.loose_unit,
         });
-        groupMap[key].total += (sp.price || 0) * (order.quantity || 1);
+        groupMap[key].total += isLoose ? loosePrice : ((sp.price || 0) * (order.quantity || 1));
         groupMap[key].all_ids.push(order.id);
+        // Always update photos — any row in the group might have them
+        if (order.handoff_photo) groupMap[key].handoff_photo = order.handoff_photo;
+        if (order.product_photo) groupMap[key].product_photo = order.product_photo;
+        if (order.cancellation_proof) groupMap[key].cancellation_proof = order.cancellation_proof;
 
         // Payment proof — use whichever row has it
         if (order.payment_proof && !groupMap[key].payment_proof) {
@@ -446,19 +463,25 @@ export default function ShopOrders() {
       let riderIdMap: Record<string, string> = {};
       let otpMap: Record<string, string> = {};
       try {
-        const orderIds = Object.values(groupMap).map((g:any) => g.id);
+        // Fetch ALL order IDs in every group — rider saves photos on any of them
+        const allOrderIds = Object.values(groupMap).flatMap((g:any) => g.all_ids?.length ? g.all_ids : [g.id]);
         const { data: extraData } = await supabase
           .from("orders")
-          .select("id, rider_id, delivery_otp")
-          .in("id", orderIds);
-        (extraData || []).forEach((row: any) => {
-          if (row.rider_id) riderIdMap[row.id] = row.rider_id;
-          if (row.delivery_otp) otpMap[row.id] = row.delivery_otp;
-        });
-        // Apply to groupMap
+          .select("id, rider_id, delivery_otp, handoff_photo, product_photo")
+          .in("id", allOrderIds);
+        const extraMap: Record<string, any> = {};
+        (extraData || []).forEach((row: any) => { extraMap[row.id] = row; });
+        // Apply to groupMap — scan ALL ids in group, pick up photos from any row
         Object.values(groupMap).forEach((g: any) => {
-          if (riderIdMap[g.id]) g.rider_id = riderIdMap[g.id];
-          if (otpMap[g.id]) g.delivery_otp = otpMap[g.id];
+          const ids: string[] = g.all_ids?.length ? g.all_ids : [g.id];
+          for (const oid of ids) {
+            const row = extraMap[oid];
+            if (!row) continue;
+            if (row.rider_id && !g.rider_id) g.rider_id = row.rider_id;
+            if (row.delivery_otp && !g.delivery_otp) g.delivery_otp = row.delivery_otp;
+            if (row.handoff_photo) g.handoff_photo = row.handoff_photo;
+            if (row.product_photo) g.product_photo = row.product_photo;
+          }
         });
       } catch (e) { /* columns may not exist yet */ }
 
@@ -945,8 +968,8 @@ export default function ShopOrders() {
                     <div className="addr-box">📍 {order.delivery_address}</div>
                   )}
 
-                  {/* Delivery proof photos — both clickable */}
-                  {status === "completed" && (order.handoff_photo || order.product_photo) && (
+                  {/* Delivery proof photos — show whenever photos exist regardless of status */}
+                  {(order.handoff_photo || order.product_photo) && (
                     <div style={{marginBottom:10}}>
                       <div style={{fontSize:11,fontWeight:800,color:"#8A96B5",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:6}}>
                         📸 Delivery Proof Photos
