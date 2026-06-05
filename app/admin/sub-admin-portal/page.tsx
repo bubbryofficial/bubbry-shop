@@ -128,8 +128,7 @@ export default function SubAdminPortal() {
               // Fallback to cached if query fails
               setAdmin(parsed);
             }
-          })
-          .catch(() => setAdmin(parsed));
+          }, () => setAdmin(parsed));
       }
     } catch (_) {}
   }, []);
@@ -314,17 +313,17 @@ export default function SubAdminPortal() {
       if (ni > ci) groupMap[key].status = order.status;
     }
     // Fetch shop names
-    const shopIds = [...new Set(Object.values(groupMap).map(g => g.shop_id).filter(Boolean))];
+    const shopIds = [...new Set(Object.values(groupMap).map((g: any) => g.shop_id).filter(Boolean))];
     const { data: shopProfiles } = shopIds.length > 0
       ? await supabase.from("profiles").select("id,shop_name,name").in("id", shopIds)
       : { data: [] };
-    const shopNameMap = {};
-    (shopProfiles||[]).forEach(s => { shopNameMap[s.id] = s.shop_name||s.name; });
+    const shopNameMap: any = {};
+    (shopProfiles||[]).forEach((s: any) => { shopNameMap[s.id] = s.shop_name||s.name; });
 
-    return Object.values(groupMap).map(g => ({
+    return Object.values(groupMap).map((g: any) => ({
       ...g,
       shop_name: shopNameMap[g.shop_id]||"Shop",
-    })).sort((a,b) => new Date(b.created_at).getTime()-new Date(a.created_at).getTime());
+    })).sort((a: any, b: any) => new Date(b.created_at).getTime()-new Date(a.created_at).getTime());
   }
 
   // Order lookup by phone
