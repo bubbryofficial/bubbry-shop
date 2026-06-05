@@ -111,7 +111,7 @@ export default function SubAdminPortal() {
   const [lookupProfile, setLookupProfile] = useState(null);
   const [lookupResults, setLookupResults] = useState(null);
 
-  function showToast(msg) { setToast(msg); setTimeout(() => setToast(""), 3000); }
+  function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(""), 3000); }
 
   // Restore session on page load
   useEffect(() => {
