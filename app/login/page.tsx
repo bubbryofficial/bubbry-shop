@@ -1,9 +1,8 @@
 "use client";
-import { supabase } from "../../lib/supabase";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-
+import { supabase } from "../../lib/supabase";
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
@@ -19,33 +18,28 @@ body { font-family: 'Plus Jakarta Sans', sans-serif; }
 .tab-row { display: flex; background: #F4F6FB; border-radius: 12px; padding: 4px; margin-bottom: 24px; }
 .tab-btn { flex: 1; padding: 10px; border: none; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: 'Plus Jakarta Sans', sans-serif; background: transparent; color: #8A96B5; transition: all 0.2s; }
 .tab-btn.active { background: white; color: #1A6BFF; box-shadow: 0 2px 8px rgba(26,107,255,0.12); }
-.phone-row { display: flex; gap: 8px; }
-.phone-prefix { padding: 14px 12px; border: 2px solid #E4EAFF; border-radius: 12px; font-size: 15px; font-weight: 700; color: #0D1B3E; background: #F4F6FB; white-space: nowrap; }
 .otp-input { width: 100%; padding: 16px; border: 2px solid #E4EAFF; border-radius: 12px; font-size: 22px; font-weight: 800; color: #0D1B3E; text-align: center; letter-spacing: 6px; font-family: 'Plus Jakarta Sans', sans-serif; outline: none; transition: all 0.2s; }
 .otp-input:focus { border-color: #1A6BFF; box-shadow: 0 0 0 4px rgba(26,107,255,0.1); }
 .resend-btn { background: none; border: none; color: #1A6BFF; font-size: 13px; font-weight: 700; cursor: pointer; font-family: 'Plus Jakarta Sans', sans-serif; padding: 4px 0; }
 .resend-btn:disabled { color: #B0BACC; cursor: not-allowed; }
+.link-btn { background: none; border: none; color: #1A6BFF; font-size: 13px; font-weight: 700; cursor: pointer; font-family: 'Plus Jakarta Sans', sans-serif; padding: 0; }
 `;
+
+type Mode = "otp" | "password";
 
 export default function Login() {
   const router = useRouter();
-
-  // Auto-redirect if already logged in
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) router.replace("/shop-dashboard");
-    });
-  }, []);
-  const [loginMode, setLoginMode] = useState<"email" | "phone">("phone");
+  const [mode, setMode] = useState<Mode>("otp");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resendTimer, setResendTimer] = useState(0);
+  const [forgot, setForgot] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
 
-  const fullPhone = "+91" + phone.replace(/\D/g, "");
+  const cleanEmail = email.trim().toLowerCase();
 
   function startResendTimer() {
     setResendTimer(30);
@@ -54,56 +48,71 @@ export default function Login() {
     }, 1000);
   }
 
-  async function redirectByRole(userId: string) {
+  async function ensureShopkeeper(): Promise<boolean> {
+    const { data: profiles } = await supabase.from("profiles").select("id, role").eq("email", cleanEmail);
+    if (!profiles || profiles.length === 0) { alert("This email is not registered. Please sign up first."); return false; }
+    const shop = profiles.find((p: any) => p.role === "shopkeeper");
+    if (!shop) {
+      if (confirm("This email has a customer account but no shopkeeper account.\n\nRegister as a shopkeeper?")) router.push("/signup");
+      return false;
+    }
+    return true;
+  }
+
+  async function loginWithPassword() {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) { alert("Enter a valid email address"); return; }
+    if (!password) { alert("Enter your password"); return; }
+    setLoading(true);
+    const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+    if (error || !data?.user) {
+      alert(error?.message === "Invalid login credentials"
+        ? "Wrong email or password. If you've never set a password, use Email OTP or tap 'Forgot password'."
+        : (error?.message || "Login failed"));
+      setLoading(false); return;
+    }
+    localStorage.setItem("bubbry_shop_uid", data.user.id);
+    setLoading(false);
     router.push("/shop-dashboard");
   }
 
-  async function handleEmailLogin() {
-    if (!email || !password) { alert("Fill all fields"); return; }
+  async function sendEmailOtp() {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) { alert("Enter a valid email address"); return; }
     setLoading(true);
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) { alert(error.message); setLoading(false); return; }
-    if (data.user) await redirectByRole(data.user.id);
-    setLoading(false);
+    if (!(await ensureShopkeeper())) { setLoading(false); return; }
+    const { error } = await supabase.auth.signInWithOtp({ email: cleanEmail, options: { shouldCreateUser: false } });
+    if (error) { alert(error.message || "Failed to send OTP"); setLoading(false); return; }
+    setLoading(false); setOtpSent(true); startResendTimer();
   }
 
-  async function sendPhoneOtp() {
-    if (phone.replace(/\D/g, "").length < 10) { alert("Enter a valid 10-digit number"); return; }
+  async function verifyEmailOtp() {
+    if (otp.length < 6) { alert("Enter the 6-digit OTP"); return; }
     setLoading(true);
-    // Check all profiles with this phone
-    const { data: profiles } = await supabase
-      .from("profiles")
-      .select("id, role")
-      .eq("phone", fullPhone);
-    if (!profiles || profiles.length === 0) {
-      alert("This number is not registered. Please sign up first.");
-      setLoading(false);
-      return;
+    const { data, error } = await supabase.auth.verifyOtp({ email: cleanEmail, token: otp, type: "email" });
+    if (error || !data?.user) { alert(error?.message || "Invalid OTP"); setLoading(false); return; }
+
+    if (forgot) {
+      if (!newPassword || newPassword.length < 6) { alert("Enter a new password (at least 6 characters)"); setLoading(false); return; }
+      const { error: upErr } = await supabase.auth.updateUser({ password: newPassword });
+      if (upErr) { alert("Could not set password: " + upErr.message); setLoading(false); return; }
+      alert("✓ Password updated. You're now logged in.");
     }
-    const shopProfile = profiles.find((p: any) => p.role === "shopkeeper");
-    if (!shopProfile) {
-      // Has customer account but no shopkeeper — offer to create shopkeeper account
-      if (confirm("This number has a customer account but no shopkeeper account.\n\nDo you want to register as a shopkeeper with this number?")) {
-        router.push("/signup");
-      }
-      setLoading(false);
-      return;
-    }
-    const { error } = await supabase.auth.signInWithOtp({ phone: fullPhone });
-    if (error) { alert("Could not send OTP: " + error.message); setLoading(false); return; }
+
+    localStorage.setItem("bubbry_shop_uid", data.user.id);
     setLoading(false);
-    setOtpSent(true);
-    startResendTimer();
+    router.push("/shop-dashboard");
   }
 
-  async function verifyPhoneOtp() {
-    if (otp.length < 4) { alert("Enter the OTP"); return; }
+  async function startForgot() {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) { alert("Enter your email first, then tap Forgot password"); return; }
     setLoading(true);
-    const { data, error } = await supabase.auth.verifyOtp({ phone: fullPhone, token: otp, type: "sms" });
-    if (error) { alert("Invalid OTP: " + error.message); setLoading(false); return; }
-    if (data.user) await redirectByRole(data.user.id);
+    if (!(await ensureShopkeeper())) { setLoading(false); return; }
+    const { error } = await supabase.auth.signInWithOtp({ email: cleanEmail, options: { shouldCreateUser: false } });
+    if (error) { alert(error.message || "Failed to send OTP"); setLoading(false); return; }
     setLoading(false);
+    setForgot(true); setMode("otp"); setOtpSent(true); startResendTimer();
   }
+
+  function resetToStart() { setOtpSent(false); setOtp(""); setForgot(false); setNewPassword(""); }
 
   return (
     <div style={{ minHeight: "100vh", background: "linear-gradient(160deg, #EBF1FF 0%, #F4F6FB 60%)", display: "flex", flexDirection: "column", fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
@@ -118,67 +127,68 @@ export default function Login() {
       <div style={{ flex: 1, padding: "36px 24px 48px", maxWidth: 420, margin: "0 auto", width: "100%" }}>
         <div style={{ background: "white", borderRadius: 20, padding: 24, boxShadow: "0 8px 40px rgba(26,107,255,0.1)", border: "1.5px solid #E4EAFF" }}>
 
-          {/* Mode tabs */}
-          <div className="tab-row">
-            <button className={`tab-btn ${loginMode === "phone" ? "active" : ""}`} onClick={() => { setLoginMode("phone"); setOtpSent(false); setOtp(""); }}>
-              📱 Phone OTP
-            </button>
-            <button className={`tab-btn ${loginMode === "email" ? "active" : ""}`} onClick={() => setLoginMode("email")}>
-              ✉️ Email
-            </button>
-          </div>
+          {!otpSent && (
+            <div className="tab-row">
+              <button className={`tab-btn ${mode === "otp" ? "active" : ""}`} onClick={() => { setMode("otp"); resetToStart(); }}>Email OTP</button>
+              <button className={`tab-btn ${mode === "password" ? "active" : ""}`} onClick={() => { setMode("password"); resetToStart(); }}>Password</button>
+            </div>
+          )}
 
-          {/* Phone OTP login */}
-          {loginMode === "phone" && !otpSent && (
+          {mode === "password" && !otpSent && (
+            <>
+              <div style={{ marginBottom: 16 }}>
+                <label className="field-label">Email Address</label>
+                <input className="auth-input" placeholder="you@example.com" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+              </div>
+              <div style={{ marginBottom: 14 }}>
+                <label className="field-label">Password</label>
+                <input className="auth-input" placeholder="Your password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+              </div>
+              <div style={{ textAlign: "right", marginBottom: 8 }}>
+                <button className="link-btn" onClick={startForgot} disabled={loading}>Forgot password?</button>
+              </div>
+              <button className="auth-btn" onClick={loginWithPassword} disabled={loading}>
+                {loading ? "Logging in..." : "Login →"}
+              </button>
+            </>
+          )}
+
+          {mode === "otp" && !otpSent && (
             <>
               <div style={{ marginBottom: 20 }}>
-                <label className="field-label">Phone Number</label>
-                <div className="phone-row">
-                  <div className="phone-prefix">🇮🇳 +91</div>
-                  <input className="auth-input" placeholder="9876543210" type="tel" maxLength={10} value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))} style={{ flex: 1 }} />
-                </div>
+                <label className="field-label">Email Address</label>
+                <input className="auth-input" placeholder="you@example.com" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
               </div>
-              <button className="auth-btn" onClick={sendPhoneOtp} disabled={loading}>
+              <button className="auth-btn" onClick={sendEmailOtp} disabled={loading}>
                 {loading ? "Sending OTP..." : "Send OTP →"}
               </button>
             </>
           )}
 
-          {loginMode === "phone" && otpSent && (
+          {otpSent && (
             <>
               <div style={{ fontSize: 14, color: "#8A96B5", fontWeight: 600, marginBottom: 16 }}>
-                OTP sent to +91 {phone}
+                {forgot ? "Reset password — " : ""}OTP sent to {cleanEmail}
               </div>
-              <div style={{ marginBottom: 20 }}>
+              <div style={{ marginBottom: forgot ? 16 : 20 }}>
                 <label className="field-label">Enter OTP</label>
                 <input className="otp-input" placeholder="------" type="number" value={otp} onChange={(e) => setOtp(e.target.value.slice(0, 6))} />
               </div>
-              <button className="auth-btn" onClick={verifyPhoneOtp} disabled={loading || otp.length < 4}>
-                {loading ? "Verifying..." : "Verify & Login →"}
+              {forgot && (
+                <div style={{ marginBottom: 16 }}>
+                  <label className="field-label">New Password</label>
+                  <input className="auth-input" placeholder="At least 6 characters" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+                </div>
+              )}
+              <button className="auth-btn" onClick={verifyEmailOtp} disabled={loading || otp.length < 6}>
+                {loading ? "Verifying..." : forgot ? "Set password & Login →" : "Verify & Login →"}
               </button>
               <div style={{ textAlign: "center", marginTop: 12 }}>
-                <button className="resend-btn" onClick={sendPhoneOtp} disabled={resendTimer > 0 || loading}>
+                <button className="resend-btn" onClick={forgot ? startForgot : sendEmailOtp} disabled={resendTimer > 0 || loading}>
                   {resendTimer > 0 ? `Resend in ${resendTimer}s` : "Resend OTP"}
                 </button>
               </div>
-              <button className="auth-btn secondary" onClick={() => { setOtpSent(false); setOtp(""); }}>← Change Number</button>
-            </>
-          )}
-
-          {/* Email login */}
-          {loginMode === "email" && (
-            <>
-              <div style={{ marginBottom: 16 }}>
-                <label className="field-label">Email</label>
-                <input type="email" className="auth-input" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-              </div>
-              <div style={{ marginBottom: 24 }}>
-                <label className="field-label">Password</label>
-                <input type="password" className="auth-input" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleEmailLogin()} />
-              </div>
-              <button className="auth-btn" onClick={handleEmailLogin} disabled={loading}>
-                {loading ? "Logging in..." : "Login →"}
-              </button>
+              <button className="auth-btn secondary" onClick={() => resetToStart()}>← Back</button>
             </>
           )}
         </div>
@@ -189,7 +199,7 @@ export default function Login() {
         </p>
         <p style={{ textAlign: "center", marginTop: 12, fontSize: 13, color: "#B0BACC", fontWeight: 500 }}>
           Looking to shop?{" "}
-          <a href="https://bubbry.in" style={{ color: "#1A6BFF", fontWeight: 700, textDecoration: "none" }}>Open Bubbry →</a>
+          <a href="https://bubbry.co.in" style={{ color: "#1A6BFF", fontWeight: 700, textDecoration: "none" }}>Open Bubbry →</a>
         </p>
       </div>
     </div>

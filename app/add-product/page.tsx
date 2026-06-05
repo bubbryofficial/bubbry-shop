@@ -65,6 +65,7 @@ export default function AddProduct() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [priceMap, setPriceMap] = useState<Record<string, string>>({});
+  const [mrpMap, setMrpMap] = useState<Record<string, string>>({});
   const [stockMap, setStockMap] = useState<Record<string, string>>({});
   const [addedMap, setAddedMap] = useState<Record<string, boolean>>({});
   const [uploadingMap, setUploadingMap] = useState<Record<string, boolean>>({});
@@ -110,6 +111,9 @@ export default function AddProduct() {
     const price = priceMap[product.id];
     const stock = stockMap[product.id];
     if (!price || !stock) { alert("Enter price and stock"); return; }
+    const mrpVal = mrpMap[product.id];
+    const mrpNum = mrpVal ? Number(mrpVal) : Number(price);
+    if (Number(price) > mrpNum) { alert("Discounted price cannot be higher than MRP."); return; }
 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { alert("Login first"); return; }
@@ -133,6 +137,7 @@ export default function AddProduct() {
       shop_id: user.id,
       product_id: product.id,
       price: Number(price),
+      mrp: mrpNum,
       stock: Number(stock),
       name: product.name ?? "",
       size: product.size ?? "",
@@ -142,6 +147,7 @@ export default function AddProduct() {
     setAddedMap((p) => ({ ...p, [product.id]: true }));
     setTimeout(() => setAddedMap((p) => ({ ...p, [product.id]: false })), 2500);
     setPriceMap((p) => ({ ...p, [product.id]: "" }));
+    setMrpMap((p) => ({ ...p, [product.id]: "" }));
     setStockMap((p) => ({ ...p, [product.id]: "" }));
   }
 
@@ -246,7 +252,11 @@ export default function AddProduct() {
 
                   <div className="input-row">
                     <div className="mini-field">
-                      <div className="mini-label">Price (₹)</div>
+                      <div className="mini-label">MRP (₹)</div>
+                      <input className="mini-input" placeholder="0.00" type="number" min="0" value={mrpMap[product.id] ?? ""} onChange={(e) => setMrpMap((p) => ({ ...p, [product.id]: e.target.value }))} />
+                    </div>
+                    <div className="mini-field">
+                      <div className="mini-label">Selling (₹)</div>
                       <input className="mini-input" placeholder="0.00" type="number" min="0" value={priceMap[product.id] ?? ""} onChange={(e) => setPriceMap((p) => ({ ...p, [product.id]: e.target.value }))} />
                     </div>
                     <div className="mini-field">

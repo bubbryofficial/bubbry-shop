@@ -1,8 +1,7 @@
 "use client";
-import { supabase } from "../../lib/supabase";
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-
+import { supabase } from "../../lib/supabase";
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
@@ -232,6 +231,32 @@ function LocationStep({ onConfirm }: { onConfirm: (lat: number, lng: number, add
   );
 }
 
+const STATES_CITIES: Record<string,string[]> = {
+  "Andhra Pradesh":["Visakhapatnam","Vijayawada","Guntur","Nellore","Kurnool","Rajahmundry","Tirupati","Anantapur"],
+  "Assam":["Guwahati","Silchar","Dibrugarh","Jorhat","Nagaon","Tinsukia"],
+  "Bihar":["Patna","Gaya","Bhagalpur","Muzaffarpur","Purnia","Darbhanga","Arrah"],
+  "Chandigarh":["Chandigarh"],
+  "Chhattisgarh":["Raipur","Bhilai","Bilaspur","Korba","Durg"],
+  "Delhi":["New Delhi","North Delhi","South Delhi","East Delhi","West Delhi","Dwarka","Rohini"],
+  "Goa":["Panaji","Margao","Vasco da Gama","Mapusa"],
+  "Gujarat":["Ahmedabad","Surat","Vadodara","Rajkot","Bhavnagar","Jamnagar","Gandhinagar"],
+  "Haryana":["Faridabad","Gurgaon","Panipat","Ambala","Rohtak","Hisar","Karnal","Sonipat","Panchkula"],
+  "Himachal Pradesh":["Shimla","Dharamshala","Solan","Mandi","Palampur"],
+  "Jharkhand":["Ranchi","Jamshedpur","Dhanbad","Bokaro","Deoghar"],
+  "Karnataka":["Bangalore","Mysore","Hubli","Mangalore","Belgaum","Gulbarga","Shimoga","Tumkur"],
+  "Kerala":["Thiruvananthapuram","Kochi","Kozhikode","Thrissur","Kollam","Palakkad","Malappuram","Kannur"],
+  "Madhya Pradesh":["Indore","Bhopal","Jabalpur","Gwalior","Ujjain","Sagar","Ratlam"],
+  "Maharashtra":["Mumbai","Pune","Nagpur","Nashik","Aurangabad","Solapur","Kolhapur","Amravati","Thane"],
+  "Odisha":["Bhubaneswar","Cuttack","Rourkela","Berhampur","Sambalpur","Puri"],
+  "Punjab":["Ludhiana","Amritsar","Jalandhar","Patiala","Bathinda","Mohali","Firozpur"],
+  "Rajasthan":["Jaipur","Jodhpur","Udaipur","Kota","Ajmer","Bikaner","Alwar","Bharatpur"],
+  "Tamil Nadu":["Chennai","Coimbatore","Madurai","Tiruchirappalli","Salem","Tirunelveli","Vellore","Erode"],
+  "Telangana":["Hyderabad","Warangal","Nizamabad","Karimnagar","Khammam","Mahbubnagar"],
+  "Uttar Pradesh":["Meerut","Lucknow","Agra","Kanpur","Varanasi","Prayagraj","Ghaziabad","Noida","Bareilly","Aligarh","Moradabad","Saharanpur","Gorakhpur","Mathura","Muzaffarnagar","Hapur","Sambhal"],
+  "Uttarakhand":["Dehradun","Haridwar","Roorkee","Haldwani","Rudrapur","Kashipur","Rishikesh","Nainital","Almora"],
+  "West Bengal":["Kolkata","Howrah","Durgapur","Asansol","Siliguri","Bardhaman","Kharagpur","Malda"],
+};
+
 export default function ShopSignup() {
   const router = useRouter();
   const [step, setStep] = useState<Step>("details");
@@ -243,7 +268,7 @@ export default function ShopSignup() {
   const [mapRef, setMapRef] = useState<any>(null);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [signupPassword, setSignupPassword] = useState("");
   const [shopName, setShopName] = useState("");
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
@@ -252,9 +277,12 @@ export default function ShopSignup() {
   const [consentChecked, setConsentChecked] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resendTimer, setResendTimer] = useState(0);
+  const [shopState, setShopState] = useState("");
+  const [shopCity, setShopCity] = useState("");
   const [userId, setUserId] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fullPhone = "+91" + phone.replace(/\D/g, "");
+  const cleanEmail = email.trim().toLowerCase();
   const stepNum = step === "details" ? 1 : step === "phone" ? 2 : step === "otp" ? 3 : step === "location" ? 4 : step === "shopfront" ? 5 : 5;
 
   function startTimer() {
@@ -263,37 +291,61 @@ export default function ShopSignup() {
   }
 
   async function sendOtp() {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) { alert("Enter a valid email address"); return; }
     if (phone.replace(/\D/g, "").length < 10) { alert("Enter a valid 10-digit phone number"); return; }
     setLoading(true);
-    // Check for existing shopkeeper account with same number
-    const { data: existing } = await supabase
+    // Check for existing shopkeeper account with same email or phone
+    const { data: byEmail } = await supabase
+      .from("profiles").select("id, role").eq("email", cleanEmail);
+    const { data: byPhone } = await supabase
       .from("profiles").select("id, role").eq("phone", fullPhone);
-    const alreadyShopkeeper = (existing || []).find((p: any) => p.role === "shopkeeper");
+    const existing = [...(byEmail || []), ...(byPhone || [])];
+    const alreadyShopkeeper = existing.find((p: any) => p.role === "shopkeeper");
     if (alreadyShopkeeper) {
-      alert("A shopkeeper account already exists with this number. Please log in instead.");
+      alert("A shopkeeper account already exists with this email or number. Please log in instead.");
       setLoading(false);
       return;
     }
-    const { error } = await supabase.auth.signInWithOtp({ phone: fullPhone });
-    if (error) { alert("Could not send OTP: " + error.message); setLoading(false); return; }
+    const { error } = await supabase.auth.signInWithOtp({
+      email: cleanEmail,
+      options: { shouldCreateUser: true },
+    });
+    if (error) { alert(error.message || "Failed to send OTP"); setLoading(false); return; }
     setLoading(false); startTimer(); setStep("otp");
   }
 
   async function verifyOtp() {
-    if (otp.length < 4) { alert("Enter the OTP"); return; }
+    if (otp.length < 6) { alert("Enter the 6-digit OTP"); return; }
     setLoading(true);
-    const { data, error } = await supabase.auth.verifyOtp({ phone: fullPhone, token: otp, type: "sms" });
-    if (error) { alert("Invalid OTP: " + error.message); setLoading(false); return; }
+    let { data, error } = await supabase.auth.verifyOtp({
+      email: cleanEmail,
+      token: otp,
+      type: "email",
+    });
+    // New signups may be confirmed under the "signup" token type instead of "email"
+    if (error || !data?.user) {
+      const retry = await supabase.auth.verifyOtp({
+        email: cleanEmail,
+        token: otp,
+        type: "signup",
+      });
+      data = retry.data; error = retry.error;
+    }
+    if (error || !data?.user) { alert(error?.message || "Invalid OTP"); setLoading(false); return; }
     const user = data.user;
-    if (!user) { alert("Verification failed"); setLoading(false); return; }
     setUserId(user.id);
-    await supabase.auth.updateUser({ email, password });
     const { error: pe } = await supabase.from("profiles").upsert({
-      id: user.id, name: fullName, email, phone: fullPhone, role: "shopkeeper",
-      shop_name: shopName, is_live: false, shopfront_verified: false,
+      id: user.id, name: fullName, email: cleanEmail, phone: fullPhone, role: "shopkeeper",
+      shop_name: shopName, state: shopState, city: shopCity,
+      is_live: false, shopfront_verified: false,
       offers_delivery: false, offers_pickup: true,
     });
     if (pe) { alert("Profile error: " + pe.message); setLoading(false); return; }
+    if (signupPassword && signupPassword.length >= 6) {
+      const { error: pwErr } = await supabase.auth.updateUser({ password: signupPassword });
+      if (pwErr) console.error("Could not set password:", pwErr.message);
+    }
+    localStorage.setItem("bubbry_shop_uid", user.id);
     setLoading(false);
     setStep("location");
   }
@@ -328,16 +380,37 @@ export default function ShopSignup() {
             <div style={{ fontSize: 17, fontWeight: 800, color: "#0D1B3E", marginBottom: 20 }}>Shop Details</div>
             <div style={{ marginBottom: 14 }}><label className="field-label">Your Full Name</label><input className="auth-input" placeholder="Rahul Sharma" value={fullName} onChange={e => setFullName(e.target.value)} /></div>
             <div style={{ marginBottom: 14 }}><label className="field-label">Shop Name</label><input className="auth-input" placeholder="e.g. Sharma General Store" value={shopName} onChange={e => setShopName(e.target.value)} /></div>
-            <div style={{ marginBottom: 14 }}><label className="field-label">Email</label><input type="email" className="auth-input" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} /></div>
-            <div style={{ marginBottom: 20 }}><label className="field-label">Password</label><input type="password" className="auth-input" placeholder="Min. 6 characters" value={password} onChange={e => setPassword(e.target.value)} /></div>
-            <button className="auth-btn" onClick={() => { if (!fullName||!shopName||!email||password.length<6){alert("Fill all fields");return;} setStep("phone"); }}>Next →</button>
+            <div style={{ marginBottom: 14 }}>
+              <label className="field-label">State *</label>
+              <select className="auth-input" value={shopState} onChange={e => { setShopState(e.target.value); setShopCity(""); }}
+                style={{ cursor:"pointer", appearance:"none" }}>
+                <option value="">Select state...</option>
+                {Object.keys(STATES_CITIES).sort().map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label className="field-label">City *</label>
+              <select className="auth-input" value={shopCity} onChange={e => setShopCity(e.target.value)}
+                disabled={!shopState} style={{ cursor:shopState?"pointer":"not-allowed", opacity:shopState?1:0.6, appearance:"none" }}>
+                <option value="">{shopState ? "Select city..." : "Select state first"}</option>
+                {(STATES_CITIES[shopState]||[]).map(ct => <option key={ct} value={ct}>{ct}</option>)}
+              </select>
+            </div>
+            <button className="auth-btn" onClick={() => { if (!fullName||!shopName){alert("Please fill in your name and shop name");return;} if(!shopState||!shopCity){alert("Please select your state and city");return;} setStep("phone"); }}>Next →</button>
           </>}
 
           {step === "phone" && <>
-            <div style={{ fontSize: 17, fontWeight: 800, color: "#0D1B3E", marginBottom: 6 }}>Verify Phone</div>
-            <div style={{ fontSize: 13, color: "#8A96B5", marginBottom: 20 }}>We'll send you a one-time code</div>
-            <div style={{ marginBottom: 20 }}><label className="field-label">Phone Number</label>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "#0D1B3E", marginBottom: 6 }}>Verify your account</div>
+            <div style={{ fontSize: 13, color: "#8A96B5", marginBottom: 20 }}>We'll email you a one-time code</div>
+            <div style={{ marginBottom: 14 }}><label className="field-label">Email Address *</label>
+              <input className="auth-input" placeholder="you@example.com" type="email" value={email} onChange={e => setEmail(e.target.value)} />
+            </div>
+            <div style={{ marginBottom: 14 }}><label className="field-label">Phone Number *</label>
               <div className="phone-row"><div className="phone-prefix">🇮🇳 +91</div><input className="auth-input" placeholder="9876543210" type="tel" maxLength={10} value={phone} onChange={e => setPhone(e.target.value.replace(/\D/g,""))} style={{ flex: 1 }} /></div>
+            </div>
+            <div style={{ marginBottom: 20 }}><label className="field-label">Password (optional)</label>
+              <input className="auth-input" placeholder="Set a password for faster login" type="password" value={signupPassword} onChange={e => setSignupPassword(e.target.value)} />
+              <div style={{ fontSize: 11, color: "#8A96B5", fontWeight: 600, marginTop: 6 }}>Optional — you can always log in with email OTP. Set one (min 6 chars) to also log in with a password.</div>
             </div>
             {/* Legal Consent */}
             <div className="consent-box">
@@ -363,14 +436,14 @@ export default function ShopSignup() {
 
           {step === "otp" && <>
             <div style={{ fontSize: 17, fontWeight: 800, color: "#0D1B3E", marginBottom: 6 }}>Enter OTP</div>
-            <div style={{ fontSize: 13, color: "#8A96B5", marginBottom: 12 }}>Sent to +91 {phone}</div>
+            <div style={{ fontSize: 13, color: "#8A96B5", marginBottom: 12 }}>Sent to {cleanEmail}</div>
             <div style={{ background:"#E6FAF4", border:"1.5px solid #B8E8D4", borderRadius:10, padding:"10px 12px", marginBottom:16, fontSize:12, color:"#00875A", fontWeight:600 }}>
               ✓ By verifying this OTP, you digitally sign and agree to Bubbry&apos;s Seller Terms, Privacy Policy, and Refund Policy as a registered Seller
             </div>
             <div style={{ marginBottom: 20 }}><input className="otp-input" placeholder="------" type="number" value={otp} onChange={e => setOtp(e.target.value.slice(0,6))} /></div>
-            <button className="auth-btn" onClick={verifyOtp} disabled={loading||otp.length<4}>{loading ? "Verifying..." : "Verify & Continue →"}</button>
+            <button className="auth-btn" onClick={verifyOtp} disabled={loading||otp.length<6}>{loading ? "Verifying..." : "Verify & Continue →"}</button>
             <div style={{ textAlign: "center", marginTop: 14 }}><button className="resend-btn" onClick={sendOtp} disabled={resendTimer>0||loading}>{resendTimer>0 ? `Resend in ${resendTimer}s` : "Resend OTP"}</button></div>
-            <button className="auth-btn secondary" style={{ marginTop: 10 }} onClick={() => { setStep("phone"); setOtp(""); }}>← Change Number</button>
+            <button className="auth-btn secondary" style={{ marginTop: 10 }} onClick={() => { setStep("phone"); setOtp(""); }}>← Change Details</button>
           </>}
 
           {step === "location" && (
@@ -421,7 +494,7 @@ export default function ShopSignup() {
           Already have an account? <a href="/login" style={{ color: "#1A6BFF", fontWeight: 700, textDecoration: "none" }}>Login</a>
         </p>
         <p style={{ textAlign: "center", marginTop: 12, fontSize: 13, color: "#B0BACC", fontWeight: 500 }}>
-          Looking to shop? <a href="https://bubbry.in" style={{ color: "#1A6BFF", fontWeight: 700, textDecoration: "none" }}>Open Bubbry →</a>
+          Looking to shop? <a href="https://bubbry.co.in" style={{ color: "#1A6BFF", fontWeight: 700, textDecoration: "none" }}>Open Bubbry →</a>
         </p>
       </div>
     </div>

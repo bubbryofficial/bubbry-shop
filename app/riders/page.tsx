@@ -91,7 +91,7 @@ export default function RidersPage() {
 
       <div className="page">
         <div className="info-box">
-          📱 Riders log in at <strong>rider.bubbry.in</strong> using their phone number. Add their number here first — they can't log in without being registered under your shop.
+          📱 Riders log in at <strong>rider.bubbry.co.in</strong> using their phone number. Add their number here first — they can't log in without being registered under your shop.
         </div>
 
         {/* Add rider */}
@@ -134,7 +134,7 @@ export default function RidersPage() {
         <div className="info-box" style={{ marginTop: 4 }}>
           🔒 <strong>How it works:</strong><br />
           1. Add rider's name and phone here<br />
-          2. Rider opens rider.bubbry.in and logs in with their phone<br />
+          2. Rider opens rider.bubbry.co.in and logs in with their phone<br />
           3. When you mark an order "Out for Delivery", select the rider<br />
           4. Rider sees the delivery details and their live location shows on the map
         </div>

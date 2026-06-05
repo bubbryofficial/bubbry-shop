@@ -1,7 +1,11 @@
 "use client";
-import { supabase } from "../../lib/supabase";
 import { useState, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
 
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 const ADMIN_PASSWORD = "bubbry-admin-2024";
 
@@ -59,7 +63,10 @@ body { font-family: 'Plus Jakarta Sans', sans-serif; background: #F4F6FB; min-he
 export default function AdminPage() {
   const [authed, setAuthed] = useState(false);
   const [pw, setPw] = useState("");
-  const [adminTab, setAdminTab] = useState<"shops"|"photos"|"disputes">("shops");
+  const [adminTab, setAdminTab] = useState<"shops"|"photos"|"disputes"|"subadmins">("shops");
+  const [subAdmins, setSubAdmins] = useState<any[]>([]);
+  const [subAdminTasks, setSubAdminTasks] = useState<Record<string,any>>({});
+  const [loadingSubAdmins, setLoadingSubAdmins] = useState(false);
 
   const [shops, setShops] = useState<any[]>([]);
   const [shopLoading, setShopLoading] = useState(false);
@@ -80,6 +87,63 @@ export default function AdminPage() {
     if (shopFilter==="pending") query = query.eq("shopfront_verified",false).not("shopfront_rejected","eq",true);
     const { data } = await query.order("created_at",{ascending:false});
     setShops(data||[]); setShopLoading(false);
+  }
+
+  async function fetchSubAdminStatus() {
+    setLoadingSubAdmins(true);
+    const { data: admins } = await supabase.from("sub_admins").select("*").eq("is_active", true).order("created_at", { ascending: false });
+    setSubAdmins(admins || []);
+    // For each sub-admin check their city's pending tasks
+    const tasks: Record<string,any> = {};
+    for (const admin of (admins || [])) {
+      const coords = getCityCoords(admin.city);
+      let pendingShops = 0, openDisputes = 0, pendingPhotos = 0;
+      try {
+        // Get shops in sub-admin city
+        const { data: allShops } = await supabase.from("profiles").select("id,latitude,longitude,shopfront_verified,shopfront_rejected").eq("role","shopkeeper");
+        const cityShops = coords
+          ? (allShops||[]).filter(s => s.latitude && s.longitude && haversine(coords[0],coords[1],s.latitude,s.longitude) <= 40)
+          : (allShops||[]);
+        pendingShops = cityShops.filter(s => !s.shopfront_verified && !s.shopfront_rejected).length;
+        const cityShopIds = cityShops.map(s => s.id);
+        if (cityShopIds.length > 0 && admin.permissions?.includes("manage_disputes")) {
+          const { data: orderData } = await supabase.from("orders").select("id").in("shop_id", cityShopIds);
+          const orderIds = (orderData||[]).map(o => o.id);
+          if (orderIds.length > 0) {
+            const { count } = await supabase.from("disputes").select("id", { count:"exact", head:true }).in("order_id", orderIds).eq("status","open");
+            openDisputes = count || 0;
+          }
+        }
+        if (admin.permissions?.includes("manage_products")) {
+          const { count } = await supabase.from("master_products").select("id", { count:"exact", head:true }).not("pending_image_url","is",null);
+          pendingPhotos = count || 0;
+        }
+      } catch(e) {}
+      tasks[admin.id] = { pendingShops, openDisputes, pendingPhotos, total: pendingShops + openDisputes + pendingPhotos };
+    }
+    setSubAdminTasks(tasks);
+    setLoadingSubAdmins(false);
+  }
+
+  function getCityCoords(city: string): [number,number] | null {
+    const COORDS: Record<string,[number,number]> = {
+      "Meerut":[28.9845,77.7064],"Lucknow":[26.8467,80.9462],"Delhi":[28.6139,77.2090],"New Delhi":[28.6139,77.2090],
+      "Mumbai":[19.0760,72.8777],"Bangalore":[12.9716,77.5946],"Hyderabad":[17.3850,78.4867],
+      "Chennai":[13.0827,80.2707],"Kolkata":[22.5726,88.3639],"Pune":[18.5204,73.8567],
+      "Ahmedabad":[23.0225,72.5714],"Jaipur":[26.9124,75.7873],"Surat":[21.1702,72.8311],
+      "Haldwani":[29.2183,79.5130],"Rudrapur":[28.9835,79.4000],"Dehradun":[30.3165,78.0322],
+      "Noida":[28.5355,77.3910],"Gurgaon":[28.4595,77.0266],"Faridabad":[28.4089,77.3178],
+      "Ghaziabad":[28.6692,77.4538],"Kanpur":[26.4499,80.3319],"Agra":[27.1767,78.0081],
+      "Patna":[25.5941,85.1376],"Indore":[22.7196,75.8577],"Bhopal":[23.2599,77.4126],
+      "Chandigarh":[30.7333,76.7794],"Amritsar":[31.6340,74.8723],"Ludhiana":[30.9010,75.8573],
+    };
+    return COORDS[city] || null;
+  }
+
+  function haversine(lat1:number,lng1:number,lat2:number,lng2:number):number {
+    const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLng=(lng2-lng1)*Math.PI/180;
+    const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+    return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
   }
 
   async function fetchPendingPhotos() {
@@ -199,8 +263,9 @@ export default function AdminPage() {
         <button className={`tab-btn ${adminTab==="shops"?"active":""}`} onClick={()=>setAdminTab("shops")}>🏪 Shop Verification</button>
         <button className={`tab-btn ${adminTab==="photos"?"active":""}`} onClick={()=>{setAdminTab("photos");fetchPendingPhotos();}}>📸 Photos {photos.length>0?`(${photos.length})`:""}</button>
         <button className={`tab-btn ${adminTab==="disputes"?"active":""}`} onClick={()=>{setAdminTab("disputes");fetchDisputes();}}>
-          🚨 Disputes {openDisputes.length>0?`(${openDisputes.length})` : ""}
-        </button>
+        ⚖️ Disputes {openDisputes.length>0?`(${openDisputes.length})`:""}</button>
+        <button className={`tab-btn ${adminTab==="subadmins"?"active":""}`} onClick={()=>{setAdminTab("subadmins");fetchSubAdminStatus();}}>
+        👥 Sub-Admin Tasks</button>
         <button onClick={()=>{fetchShops();fetchPendingPhotos();fetchDisputes();}} style={{marginLeft:"auto",padding:"8px 14px",borderRadius:10,border:"1.5px solid #E4EAFF",background:"white",fontFamily:"inherit",fontWeight:700,fontSize:13,cursor:"pointer",color:"#1A6BFF"}}>↻ Refresh</button>
       </div>
 
@@ -367,6 +432,63 @@ export default function AdminPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+      {adminTab==="subadmins" && (
+        <div style={{padding:"16px"}}>
+          {loadingSubAdmins ? (
+            <div style={{textAlign:"center",padding:40,color:"#8A96B5",fontWeight:600}}>Checking sub-admin tasks...</div>
+          ) : subAdmins.length === 0 ? (
+            <div style={{textAlign:"center",padding:40,color:"#B0BACC"}}>
+              <div style={{fontSize:40,marginBottom:12}}>👥</div>
+              <div style={{fontWeight:700}}>No active sub-admins</div>
+              <a href="/admin/sub-admins" style={{display:"inline-block",marginTop:12,padding:"8px 18px",background:"#1A6BFF",color:"white",borderRadius:10,fontWeight:800,textDecoration:"none",fontSize:13}}>Add Sub-Admin</a>
+            </div>
+          ) : (
+            subAdmins.map(admin => {
+              const t: any = subAdminTasks[admin.id] || {};
+              const hasPending = (t.total || 0) > 0;
+              return (
+                <div key={admin.id} className="card" style={{overflow:"hidden"}}>
+                  <div style={{padding:"14px 16px",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:10}}>
+                    <div style={{flex:1}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                        <div style={{width:8,height:8,borderRadius:"50%",background:hasPending?"#E53E3E":"#00B37E",flexShrink:0}}/>
+                        <div style={{fontSize:15,fontWeight:900,color:"#0D1B3E"}}>{admin.name}</div>
+                        {hasPending && <span style={{background:"#E53E3E",color:"white",fontSize:10,fontWeight:900,padding:"2px 7px",borderRadius:10}}>{t.total} pending</span>}
+                      </div>
+                      <div style={{fontSize:12,color:"#8A96B5",fontWeight:600}}>{admin.email}</div>
+                      <div style={{fontSize:12,color:"#1A6BFF",fontWeight:700,marginTop:3}}>📍 {admin.city}, {admin.state}</div>
+                    </div>
+                    <a href="/admin/sub-admins" style={{fontSize:11,color:"#1A6BFF",fontWeight:800,textDecoration:"none",background:"#EBF1FF",padding:"5px 10px",borderRadius:7}}>Manage</a>
+                  </div>
+                  <div style={{background:"#F4F6FB",padding:"10px 16px",display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {admin.permissions?.includes("manage_shops") && (
+                      <div style={{background:t.pendingShops>0?"#FFF8E6":"#E6FAF4",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:800,color:t.pendingShops>0?"#946200":"#00875A"}}>
+                        🏪 {t.pendingShops>0?`${t.pendingShops} shops to review`:"Shops up to date"}
+                      </div>
+                    )}
+                    {admin.permissions?.includes("manage_disputes") && (
+                      <div style={{background:t.openDisputes>0?"#FFF0F0":"#E6FAF4",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:800,color:t.openDisputes>0?"#E53E3E":"#00875A"}}>
+                        ⚖️ {t.openDisputes>0?`${t.openDisputes} open disputes`:"No open disputes"}
+                      </div>
+                    )}
+                    {admin.permissions?.includes("manage_products") && (
+                      <div style={{background:t.pendingPhotos>0?"#FFF8E6":"#E6FAF4",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:800,color:t.pendingPhotos>0?"#946200":"#00875A"}}>
+                        📸 {t.pendingPhotos>0?`${t.pendingPhotos} photos to approve`:"Photos up to date"}
+                      </div>
+                    )}
+                    {(!admin.permissions || admin.permissions.length===0) && (
+                      <div style={{fontSize:12,color:"#B0BACC",fontWeight:600}}>No permissions assigned</div>
+                    )}
+                  </div>
+                  <div style={{padding:"10px 16px",borderTop:"1px solid #F4F6FB"}}>
+                    <div style={{fontSize:10,color:"#C5D5FF",fontWeight:600}}>Permissions: {(admin.permissions||[]).join(" · ") || "None"}</div>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       )}
     </div>

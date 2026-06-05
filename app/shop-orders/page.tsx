@@ -575,13 +575,30 @@ export default function ShopOrders() {
     const group = riderSelectOrder;
     // Generate 6-digit delivery OTP
     const deliveryOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    let anyError: any = null;
     for (const id of (group.all_ids || [group.id])) {
-      await supabase.from("orders").update({
+      // Essential update first: status + rider. If this fails, the dispatch
+      // truly failed, so we surface it.
+      const { error: coreErr } = await supabase.from("orders").update({
         status: "out_for_delivery",
         rider_id: selectedRider || null,
-        delivery_otp: deliveryOtp,
-        delivery_otp_verified: false,
       }).eq("id", id);
+      if (coreErr) { anyError = coreErr; continue; }
+
+      // Optional fields second, each guarded so a missing column can't block
+      // the dispatch that already succeeded.
+      try {
+        await supabase.from("orders").update({ delivery_otp: deliveryOtp }).eq("id", id);
+      } catch (_) {}
+      try {
+        await supabase.from("orders").update({ delivery_otp_verified: false }).eq("id", id);
+      } catch (_) {}
+    }
+
+    if (anyError) {
+      alert("Could not dispatch the order: " + (anyError.message || "unknown error") +
+            "\n\nIf this mentions a column or permission, tell your developer this exact message.");
+      return;
     }
     // Notify rider via realtime if selected
     if (selectedRider) {

@@ -1,9 +1,9 @@
 "use client";
-import { supabase } from "../../lib/supabase";
 
 import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { supabase } from "../../lib/supabase";
 import BarcodeScanner from "@/components/BarcodeScanner";
-
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
@@ -182,9 +182,11 @@ body { font-family: 'Plus Jakarta Sans', sans-serif; background: #F4F6FB; }
 `;
 
 export default function ShopDashboard() {
+  const router = useRouter();
   const [name, setName] = useState("");
   const [size, setSize] = useState("");
   const [price, setPrice] = useState("");
+  const [mrp, setMrp] = useState("");
   const [stock, setStock] = useState("");
   const [manualBarcode, setManualBarcode] = useState("");
   const [products, setProducts] = useState<any[]>([]);
@@ -199,6 +201,7 @@ export default function ShopDashboard() {
   const [masterSearchLoading, setMasterSearchLoading] = useState(false);
   const [quickAddId, setQuickAddId] = useState<string|null>(null);
   const [quickAddPrice, setQuickAddPrice] = useState("");
+  const [quickAddMrp, setQuickAddMrp] = useState("");
   const [quickAddStock, setQuickAddStock] = useState("");
   const [quickAddLoading, setQuickAddLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<any[]>([]);
@@ -209,16 +212,20 @@ export default function ShopDashboard() {
   const [existingImgUrl, setExistingImgUrl] = useState<string>("");
   const [uploadingImg, setUploadingImg] = useState(false);
   const [isLive, setIsLive] = useState(false);
-  const [deliveryRange, setDeliveryRange] = useState(2);
-  const [pendingRange, setPendingRange] = useState(2);   // slider value before saving
-  const [rangeSaved, setRangeSaved] = useState(false);   // show saved feedback
   const [autoOfflinedUntil, setAutoOfflinedUntil] = useState<Date|null>(null);
   const [offersDelivery, setOffersDelivery] = useState(false);
   const [offersPickup, setOffersPickup] = useState(true);
   const [togglingLive, setTogglingLive] = useState(false);
   const [shopfrontVerified, setShopfrontVerified] = useState(false);
   const [shopfrontImage, setShopfrontImage] = useState("");
+  // Subscription
+  const [subscriptionPlan, setSubscriptionPlan] = useState<"pickup" | "full" | null>(null);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<string | null>(null);
   const [upiId, setUpiId] = useState("");
+  const [deliveryRange, setDeliveryRange] = useState(2);   // km, 0.5–2
+  const [savingRange, setSavingRange] = useState(false);
+  const [newPwd, setNewPwd] = useState("");
+  const [savingPwd, setSavingPwd] = useState(false);
   const [savingUpi, setSavingUpi] = useState(false);
   const [shopName, setShopName] = useState("My Store");
   const [ownerName, setOwnerName] = useState("");
@@ -246,13 +253,23 @@ export default function ShopDashboard() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!initialized && session?.user) {
         initialized = true; uid = session.user.id;
+        // Save to localStorage as fallback
+        localStorage.setItem("bubbry_shop_uid", session.user.id);
         loadShopStatus(uid); fetchProducts(uid);
       }
     });
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!initialized && session?.user) {
         initialized = true; uid = session.user.id;
+        localStorage.setItem("bubbry_shop_uid", session.user.id);
         loadShopStatus(uid); fetchProducts(uid);
+      } else if (!initialized) {
+        // Fallback: try localStorage uid saved during login
+        const savedUid = localStorage.getItem("bubbry_shop_uid");
+        if (savedUid) {
+          initialized = true; uid = savedUid;
+          loadShopStatus(uid); fetchProducts(uid);
+        }
       }
     });
     // Realtime — refresh inventory and shop status on any change
@@ -283,9 +300,24 @@ export default function ShopDashboard() {
   }
 
   async function saveDeliveryRange(km: number) {
+    const clamped = Math.min(Math.max(km, 0.5), 2);
+    setDeliveryRange(clamped);
+    setSavingRange(true);
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) return;
-    await supabase.from("profiles").update({ delivery_range_km: km }).eq("id", session.user.id);
+    const uid = session?.user?.id || localStorage.getItem("bubbry_shop_uid") || "";
+    if (!uid) { setSavingRange(false); return; }
+    const { error } = await supabase.from("profiles").update({ delivery_range_km: clamped }).eq("id", uid);
+    setSavingRange(false);
+    if (error) { alert("Failed to save range: " + error.message); }
+  }
+
+  async function changePassword() {
+    if (!newPwd || newPwd.length < 6) { alert("Password must be at least 6 characters"); return; }    setSavingPwd(true);
+    const { error } = await supabase.auth.updateUser({ password: newPwd });
+    setSavingPwd(false);
+    if (error) { alert("Failed: " + error.message); return; }
+    setNewPwd("");
+    alert("✓ Password updated");
   }
 
   async function saveUpi() {
@@ -301,15 +333,46 @@ export default function ShopDashboard() {
     let uid = userId;
     if (!uid) {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) return;
-      uid = session.user.id;
+      if (!session?.user) {
+        // Try localStorage fallback
+        uid = localStorage.getItem("bubbry_shop_uid") || "";
+        if (!uid) return;
+      } else {
+        uid = session.user.id;
+      }
     }
     const { data, error } = await supabase
       .from("profiles")
-      .select("is_live, offers_delivery, offers_pickup, shopfront_verified, shopfront_image, upi_id, shop_name, name, auto_offlined_until, delivery_range_km")
+      .select("is_live, offers_delivery, offers_pickup, shopfront_verified, shopfront_image, upi_id, shop_name, name, auto_offlined_until, subscription_plan, subscription_status, delivery_range_km")
       .eq("id", uid)
       .single();
-    if (error) { console.log("loadShopStatus error:", error.message); return; }
+    if (error) {
+      console.log("loadShopStatus error:", error.message);
+      // If RLS blocked it (no session), try via Next.js API route
+      if (error.code === "PGRST301" || error.message?.includes("JWT")) {
+        try {
+          const res = await fetch(`/api/shop-profile?id=${uid}`);
+          if (res.ok) {
+            const profileData = await res.json();
+            if (profileData) {
+              setIsLive(profileData.is_live === true);
+              setOffersDelivery(profileData.offers_delivery === true);
+              setOffersPickup(profileData.offers_pickup === true || profileData.offers_pickup === null);
+              setShopfrontVerified(profileData.shopfront_verified === true);
+              setShopfrontImage(profileData.shopfront_image ?? "");
+              setUpiId(profileData.upi_id ?? "");
+              setShopName(profileData.shop_name || "My Store");
+              setOwnerName(profileData.name || "");
+              setProfileComplete(!!(profileData.upi_id && profileData.shopfront_image));
+              setSubscriptionPlan(profileData.subscription_plan ?? null);
+              setSubscriptionStatus(profileData.subscription_status ?? null);
+              setDeliveryRange(Math.min(Math.max(profileData.delivery_range_km ?? 2, 0.5), 2));
+            }
+          }
+        } catch(e) { console.log("API fallback failed:", e); }
+      }
+      return;
+    }
     if (data) {
       // Check if auto-offline period has expired — if so, clear it
       if (data.auto_offlined_until) {
@@ -321,9 +384,6 @@ export default function ShopDashboard() {
         }
       }
       setIsLive(data.is_live === true);
-      const rng = data.delivery_range_km || 2;
-      setDeliveryRange(rng);
-      setPendingRange(rng);
       setAutoOfflinedUntil(data.auto_offlined_until ? new Date(data.auto_offlined_until) : null);
       setOffersDelivery(data.offers_delivery === true);
       setOffersPickup(data.offers_pickup === true || data.offers_pickup === null);
@@ -333,6 +393,15 @@ export default function ShopDashboard() {
       setShopName(data.shop_name || "My Store");
       setOwnerName(data.name || "");
       setProfileComplete(!!(data.upi_id && data.shopfront_image));
+      setSubscriptionPlan(data.subscription_plan ?? null);
+      setSubscriptionStatus(data.subscription_status ?? null);
+      setDeliveryRange(Math.min(Math.max(data.delivery_range_km ?? 2, 0.5), 2));
+
+      // Auto-redirect: shopfront verified but no active subscription → go to /subscribe
+      if (data.shopfront_verified === true && data.subscription_status !== "active") {
+        router.push("/subscribe");
+        return;
+      }
     }
   }
 
@@ -345,7 +414,7 @@ export default function ShopDashboard() {
     if (val) {
       const { data: fresh } = await supabase
         .from("profiles")
-        .select("shopfront_verified, auto_offlined_until")
+        .select("shopfront_verified, auto_offlined_until, subscription_status, subscription_plan")
         .eq("id", user.id)
         .single();
 
@@ -366,6 +435,15 @@ export default function ShopDashboard() {
         return;
       }
       setShopfrontVerified(true);
+
+      // Block if no active subscription
+      if (fresh?.subscription_status !== "active") {
+        if (confirm("⚠️ You need an active subscription to go live.\n\nGo to subscription page now?")) {
+          router.push("/subscribe");
+        }
+        setTogglingLive(false);
+        return;
+      }
     }
 
     const { error } = await supabase.from("profiles").update({ is_live: val }).eq("id", user.id);
@@ -378,16 +456,35 @@ export default function ShopDashboard() {
   }
 
   async function toggleDelivery(val: boolean) {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    const { error } = await supabase.from("profiles").update({ offers_delivery: val }).eq("id", user.id);
+    // Pickup-only plan can't enable delivery
+    if (val && subscriptionPlan === "pickup") {
+      if (confirm("🛵 Delivery mode requires the Full Plan (₹234.82/month incl. GST).\n\nUpgrade now?")) {
+        router.push("/subscribe");
+      }
+      return;
+    }
+    if (val && subscriptionStatus !== "active") {
+      if (confirm("⚠️ You need an active subscription to enable delivery.\n\nGo to subscription page now?")) {
+        router.push("/subscribe");
+      }
+      return;
+    }
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return;
+    const { error } = await supabase.from("profiles").update({ offers_delivery: val }).eq("id", session.user.id);
     if (!error) setOffersDelivery(val);
   }
 
   async function togglePickup(val: boolean) {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    const { error } = await supabase.from("profiles").update({ offers_pickup: val }).eq("id", user.id);
+    if (val && subscriptionStatus !== "active") {
+      if (confirm("⚠️ You need an active subscription to enable pickup.\n\nGo to subscription page now?")) {
+        router.push("/subscribe");
+      }
+      return;
+    }
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return;
+    const { error } = await supabase.from("profiles").update({ offers_pickup: val }).eq("id", session.user.id);
     if (!error) setOffersPickup(val);
   }
 
@@ -484,13 +581,14 @@ export default function ShopDashboard() {
       if (user) {
         const { data: sp } = await supabase
           .from("shop_products")
-          .select("id, stock, price, name, size")
+          .select("id, stock, price, mrp, name, size")
           .eq("shop_id", user.id)
           .eq("product_id", data.id)
           .single();
         if (sp) {
           setExistingShopProduct(sp);
           setPrice(String(sp.price ?? ""));
+          setMrp(String(sp.mrp ?? sp.price ?? ""));
           setStock(String(sp.stock ?? ""));
           setScanStatus("found");
           setTimeout(() => setScanStatus("idle"), 4000);
@@ -590,7 +688,7 @@ export default function ShopDashboard() {
     const user = { id: uid };
     const { data: spData } = await supabase
       .from("shop_products")
-      .select("id, price, stock, product_id, name, size")
+      .select("id, price, mrp, stock, product_id, name, size")
       .eq("shop_id", user.id);
     if (!spData || spData.length === 0) { setProducts([]); return; }
     const productIds = spData.map((r: any) => r.product_id).filter(Boolean);
@@ -700,10 +798,13 @@ export default function ShopDashboard() {
       }
     }
 
+    const mrpNum = mrp ? Number(mrp) : Number(price);
+    if (Number(price) > mrpNum) { alert("Discounted price cannot be higher than MRP."); setLoading(false); return; }
     const { error } = await supabase.from("shop_products").upsert({
       shop_id: user.id,
       product_id: productId,
       price: Number(price),
+      mrp: mrpNum,
       stock: Number(stock),
       name: productName,
       size: productSize,
@@ -711,7 +812,7 @@ export default function ShopDashboard() {
 
     if (error) { alert(error.message); setLoading(false); return; }
 
-    setName(""); setPrice(""); setStock(""); setSize("");
+    setName(""); setPrice(""); setMrp(""); setStock(""); setSize("");
     setScannedBarcode(""); setManualBarcode(""); setSelectedProductId(null);
     setImgFile(null); setImgPreview(""); setExistingImgUrl(""); setExistingShopProduct(null);
     setCategory(""); setIsNewProduct(false);
@@ -722,6 +823,8 @@ export default function ShopDashboard() {
 
   async function quickAddProduct(mp: any) {
     if (!quickAddPrice || !quickAddStock) { alert("Enter price and stock"); return; }
+    const qMrp = quickAddMrp ? Number(quickAddMrp) : Number(quickAddPrice);
+    if (Number(quickAddPrice) > qMrp) { alert("Discounted price cannot be higher than MRP."); return; }
     setQuickAddLoading(true);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { alert("Please login"); setQuickAddLoading(false); return; }
@@ -729,6 +832,7 @@ export default function ShopDashboard() {
       shop_id: user.id,
       product_id: mp.id,
       price: Number(quickAddPrice),
+      mrp: qMrp,
       stock: Number(quickAddStock),
       name: mp.name,
       size: mp.size || "",
@@ -736,6 +840,7 @@ export default function ShopDashboard() {
     if (error) { alert(error.message); setQuickAddLoading(false); return; }
     setQuickAddId(null);
     setQuickAddPrice("");
+    setQuickAddMrp("");
     setQuickAddStock("");
     setQuickAddLoading(false);
     fetchProducts();
@@ -834,6 +939,57 @@ export default function ShopDashboard() {
             <div className="shopfront-banner-title">Shopfront under review</div>
             <div className="shopfront-banner-sub">Admin will approve soon. You can't go live yet.</div>
           </div>
+        </div>
+      )}
+
+      {/* Subscription banner — show if verified but no active plan, or past_due */}
+      {shopfrontVerified && subscriptionStatus !== "active" && (
+        <div className="shopfront-banner" style={{ background: subscriptionStatus === "past_due" ? "#FFE5E5" : "#EBF1FF", borderColor: subscriptionStatus === "past_due" ? "#FFCDD2" : "#A3BFFF" }}>
+          <div className="shopfront-banner-icon">{subscriptionStatus === "past_due" ? "⚠️" : "💳"}</div>
+          <div className="shopfront-banner-text" style={{ flex: 1 }}>
+            <div className="shopfront-banner-title" style={{ color: subscriptionStatus === "past_due" ? "#C62828" : "#0B47CC" }}>
+              {subscriptionStatus === "past_due" ? "Payment failed — renew now" : "Subscribe to start receiving orders"}
+            </div>
+            <div className="shopfront-banner-sub">
+              {subscriptionStatus === "past_due"
+                ? "Your last payment didn't go through. Update your subscription to keep your shop live."
+                : "Pick a plan — ₹116.82/month for pickup-only, or ₹234.82/month for full delivery (incl. GST)."}
+            </div>
+          </div>
+          <button
+            suppressHydrationWarning
+            onClick={() => router.push("/subscribe")}
+            style={{ background: "#1A6BFF", color: "white", border: "none", padding: "8px 14px", borderRadius: 10, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
+          >
+            {subscriptionStatus === "past_due" ? "Renew" : "Subscribe"}
+          </button>
+        </div>
+      )}
+
+      {/* Active subscription chip */}
+      {shopfrontVerified && subscriptionStatus === "active" && subscriptionPlan && (
+        <div style={{ margin: "0 16px 12px", padding: "10px 14px", background: "#E6FAF4", border: "1.5px solid #B8E8D4", borderRadius: 12, display: "flex", alignItems: "center", gap: 10, fontSize: 12, fontWeight: 700, color: "#00875A" }}>
+          <span>✓</span>
+          <span style={{ flex: 1 }}>{subscriptionPlan === "full" ? "Full Plan active" : "Pickup Plan active"} — ₹{subscriptionPlan === "full" ? "234.82" : "116.82"}/month auto-renewing</span>
+          <button suppressHydrationWarning onClick={() => router.push("/subscribe")}
+            style={{ background: "none", border: "none", color: "#00875A", fontWeight: 800, fontSize: 11, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
+            Manage
+          </button>
+        </div>
+      )}
+
+      {/* Advertise entry — promotes the new ads feature */}
+      {shopfrontVerified && (
+        <div style={{ margin: "0 16px 12px", padding: "12px 14px", background: "white", border: "1.5px solid #E4EAFF", borderRadius: 12, display: "flex", alignItems: "center", gap: 12, boxShadow: "0 2px 8px rgba(13,27,62,0.05)" }}>
+          <span style={{ fontSize: 22, flexShrink: 0 }}>📢</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#0D1B3E" }}>Advertise your shop</div>
+            <div style={{ fontSize: 11, color: "#8A96B5", fontWeight: 600, marginTop: 1 }}>Reach more customers in {shopName ? "your city" : "your area"}</div>
+          </div>
+          <button suppressHydrationWarning onClick={() => router.push("/ads")}
+            style={{ background: "#1A6BFF", color: "white", border: "none", padding: "8px 14px", borderRadius: 10, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
+            Promote →
+          </button>
         </div>
       )}
 
@@ -1062,15 +1218,36 @@ export default function ShopDashboard() {
                   />
                 </div>
 
-                {/* Price + Stock */}
+                {/* MRP + Selling Price */}
                 <div className="fields-row">
                   <div className="field">
-                    <label className="field-label">Price (₹)</label>
+                    <label className="field-label">MRP (₹)</label>
+                    <div className="prefix-wrap">
+                      <span className="prefix">₹</span>
+                      <input className={`field-input prefixed${mrp ? " has-val" : ""}`} placeholder="0.00" type="number" min="0" step="0.01" value={mrp} onChange={(e) => setMrp(e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label className="field-label">Selling Price (₹)</label>
                     <div className="prefix-wrap">
                       <span className="prefix">₹</span>
                       <input className={`field-input prefixed${price ? " has-val" : ""}`} placeholder="0.00" type="number" min="0" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} required />
                     </div>
                   </div>
+                </div>
+                {mrp && price && Number(price) < Number(mrp) && (
+                  <div style={{fontSize:12,fontWeight:700,color:"#00875A",marginTop:-6,marginBottom:10}}>
+                    {Math.round((1 - Number(price)/Number(mrp))*100)}% off — customers see ₹{price} (was ₹{mrp})
+                  </div>
+                )}
+                {mrp && price && Number(price) > Number(mrp) && (
+                  <div style={{fontSize:12,fontWeight:700,color:"#E53E3E",marginTop:-6,marginBottom:10}}>
+                    Selling price can't be higher than MRP.
+                  </div>
+                )}
+
+                {/* Stock */}
+                <div className="fields-row">
                   <div className="field">
                     <label className="field-label">Stock Qty</label>
                     <input className={`field-input${stock ? " has-val" : ""}`} placeholder="0" type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} required />
@@ -1117,7 +1294,7 @@ export default function ShopDashboard() {
                           <div className="prod-name">{p.name ?? "Unnamed"}</div>
                           {p.size && <div style={{fontSize:"11px",color:"#8A96B5",fontWeight:600,marginBottom:3}}>{p.size}</div>}
                           <div className="prod-meta">
-                            <span className="prod-price">₹{p.price}</span>
+                            <span className="prod-price">₹{p.price}{p.mrp && Number(p.price) < Number(p.mrp) && <span style={{fontSize:11,fontWeight:600,color:"#B0BACC",textDecoration:"line-through",marginLeft:5}}>₹{p.mrp}</span>}</span>
                             <span className={`stock-badge ${(p.stock ?? 0) < 5 ? "stock-low" : "stock-ok"}`}>{p.stock ?? 0} in stock</span>
                           </div>
                         </div>
@@ -1174,7 +1351,7 @@ export default function ShopDashboard() {
                                 <div className="prod-name">{p.name ?? mp.name}</div>
                                 {mp.size && <div style={{fontSize:"11px",color:"#8A96B5",fontWeight:600,marginBottom:3}}>{mp.size}</div>}
                                 <div className="prod-meta">
-                                  <span className="prod-price">₹{p.price}</span>
+                                  <span className="prod-price">₹{p.price}{p.mrp && Number(p.price) < Number(p.mrp) && <span style={{fontSize:11,fontWeight:600,color:"#B0BACC",textDecoration:"line-through",marginLeft:5}}>₹{p.mrp}</span>}</span>
                                   <span className={`stock-badge ${(p.stock ?? 0) < 5 ? "stock-low" : "stock-ok"}`}>{p.stock ?? 0} in stock</span>
                                 </div>
                               </div>
@@ -1318,6 +1495,36 @@ export default function ShopDashboard() {
             </div>
 
             <div className="ps">
+              <div className="ps-title">📍 Delivery Range</div>
+              <div style={{fontSize:12,color:"#8A96B5",marginBottom:14,fontWeight:500}}>Customers only see your shop if they're within this distance. Set it to match how far you can deliver.</div>
+              <div style={{display:"flex",alignItems:"baseline",justifyContent:"center",gap:6,marginBottom:10}}>
+                <span style={{fontSize:30,fontWeight:900,color:"#1A6BFF"}}>{deliveryRange < 1 ? Math.round(deliveryRange*1000) : deliveryRange}</span>
+                <span style={{fontSize:14,fontWeight:700,color:"#8A96B5"}}>{deliveryRange < 1 ? "meters" : "km"}</span>
+              </div>
+              <input
+                type="range" min="0.5" max="2" step="0.1"
+                value={deliveryRange}
+                onChange={e => setDeliveryRange(parseFloat(e.target.value))}
+                onMouseUp={e => saveDeliveryRange(parseFloat((e.target as HTMLInputElement).value))}
+                onTouchEnd={e => saveDeliveryRange(parseFloat((e.target as HTMLInputElement).value))}
+                style={{width:"100%",accentColor:"#1A6BFF",height:6,cursor:"pointer"}}
+              />
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#B0BACC",fontWeight:700,marginTop:4}}>
+                <span>500 m</span><span>2 km</span>
+              </div>
+              {savingRange && <div style={{fontSize:11,color:"#8A96B5",fontWeight:600,textAlign:"center",marginTop:8}}>Saving…</div>}
+            </div>
+
+            <div className="ps">
+              <div className="ps-title">🔒 Password</div>
+              <div style={{fontSize:12,color:"#8A96B5",marginBottom:12,fontWeight:500}}>Set or change your password to log in without an OTP. You can always use email OTP too.</div>
+              <input className="pinput" type="password" placeholder="New password (min 6 characters)" value={newPwd} onChange={e => setNewPwd(e.target.value)} />
+              <button className="save-upi-btn" disabled={savingPwd || newPwd.length < 6} onClick={changePassword}>
+                {savingPwd ? "Saving..." : "Save Password"}
+              </button>
+            </div>
+
+            <div className="ps">
               <div className="ps-title">🏪 Shopfront Photo</div>
               {shopfrontImage
                 ? <>
@@ -1349,67 +1556,6 @@ export default function ShopDashboard() {
           </div>
         </div>
       )}
-
-
-
-        {/* Delivery Range Card */}
-        {offersDelivery && (
-          <div className="card">
-            <div className="card-hdr">
-              <div className="card-hdr-icon">📍</div>
-              <div>
-                <div className="card-hdr-title">Delivery Range</div>
-                <div className="card-hdr-sub">Set how far you deliver</div>
-              </div>
-            </div>
-            <div style={{padding:"0 16px 16px"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                <span style={{fontSize:13,fontWeight:600,color:"#8A96B5"}}>500m</span>
-                <span style={{fontSize:18,fontWeight:900,color:"#1A6BFF"}}>{deliveryRange < 1 ? `${deliveryRange * 1000}m` : `${deliveryRange} km`}</span>
-                <span style={{fontSize:13,fontWeight:600,color:"#8A96B5"}}>2 km</span>
-              </div>
-              {/* Preset buttons */}
-              <div style={{display:"flex",justifyContent:"space-between",gap:6,marginBottom:12}}>
-                {[0.5,1,1.5,2].map(v => (
-                  <button key={v}
-                    onClick={() => { setPendingRange(v); setRangeSaved(false); }}
-                    style={{flex:1,padding:"10px 4px",borderRadius:10,border:"1.5px solid",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"inherit",
-                      borderColor: pendingRange===v ? "#1A6BFF" : "#E4EAFF",
-                      background: pendingRange===v ? "#EBF1FF" : "white",
-                      color: pendingRange===v ? "#1A6BFF" : "#8A96B5"}}>
-                    {v < 1 ? `${v*1000}m` : `${v}km`}
-                  </button>
-                ))}
-              </div>
-              {/* Slider */}
-              <input
-                type="range" min={0.5} max={2} step={0.5}
-                value={pendingRange}
-                onChange={e => { setPendingRange(parseFloat(e.target.value)); setRangeSaved(false); }}
-                style={{width:"100%",accentColor:"#1A6BFF",height:6,cursor:"pointer",marginBottom:12}}
-              />
-              {/* Info */}
-              <div style={{fontSize:12,color:"#8A96B5",fontWeight:500,background:"#F4F6FB",borderRadius:8,padding:"8px 12px",marginBottom:12}}>
-                🛵 Customers within <strong style={{color:"#0D1B3E"}}>{pendingRange < 1 ? `${pendingRange*1000}m` : `${pendingRange}km`}</strong> will see your shop and can place delivery orders.
-                {pendingRange !== deliveryRange && <span style={{color:"#E53E3E",fontWeight:700}}> (unsaved)</span>}
-              </div>
-              {/* Save button */}
-              <button
-                onClick={async () => {
-                  await saveDeliveryRange(pendingRange);
-                  setDeliveryRange(pendingRange);
-                  setRangeSaved(true);
-                  setTimeout(() => setRangeSaved(false), 3000);
-                }}
-                disabled={pendingRange === deliveryRange && !rangeSaved}
-                style={{width:"100%",padding:"12px",borderRadius:12,border:"none",fontSize:14,fontWeight:800,cursor:pendingRange===deliveryRange?"not-allowed":"pointer",fontFamily:"inherit",transition:"all 0.2s",
-                  background: rangeSaved ? "#00875A" : pendingRange===deliveryRange ? "#F4F6FB" : "#1A6BFF",
-                  color: pendingRange===deliveryRange && !rangeSaved ? "#B0BACC" : "white"}}>
-                {rangeSaved ? "✓ Saved!" : pendingRange===deliveryRange ? "No changes" : "💾 Save Delivery Range"}
-              </button>
-            </div>
-          </div>
-        )}
 
       <nav className="bottom-nav">
         <a href="/shop-dashboard" className="nav-item active"><div className="nav-icon">🏠</div>Home</a>
