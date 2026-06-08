@@ -100,7 +100,8 @@ function LocationStep({ onConfirm }: { onConfirm: (lat: number, lng: number, add
         map.setView([latitude, longitude], 18);
         setLat(latitude); setLng(longitude);
         reverseGeocode(latitude, longitude);
-      }, () => reverseGeocode(lat, lng));
+      }, () => reverseGeocode(lat, lng),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 });
     } else {
       reverseGeocode(lat, lng);
     }
@@ -132,7 +133,7 @@ function LocationStep({ onConfirm }: { onConfirm: (lat: number, lng: number, add
     if (!navigator.geolocation || !mapRef.current) return;
     navigator.geolocation.getCurrentPosition(pos => {
       mapRef.current.setView([pos.coords.latitude, pos.coords.longitude], 18);
-    });
+    }, () => {}, { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 });
   }
 
   // Full-screen overlay styles

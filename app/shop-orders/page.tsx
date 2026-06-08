@@ -226,7 +226,7 @@ export default function ShopOrders() {
       })
       .subscribe();
     // Poll every 5s — near real-time for busy shops
-    const poll = setInterval(() => fetchOrders(), 3000);
+    const poll = setInterval(() => fetchOrders(true), 3000);
     // Every 60s: send reminder notification for any pending order older than 1 min,
     // and auto-cancel any pending order older than 15 min
     const timerCheck = setInterval(() => checkPendingOrderTimers(), 60000);
@@ -359,7 +359,7 @@ export default function ShopOrders() {
     }
   }
 
-  async function fetchOrders() {
+  async function fetchOrders(silent = false) {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const user = session?.user;
