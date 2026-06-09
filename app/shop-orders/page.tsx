@@ -203,6 +203,8 @@ export default function ShopOrders() {
   const [riders, setRiders] = useState<any[]>([]);
   const [riderSelectOrder, setRiderSelectOrder] = useState<any>(null);
   const [selectedRider, setSelectedRider] = useState("");
+  // Ticks every second so the per-order "time left to mark ready" countdown updates live.
+  const [nowTick, setNowTick] = useState(Date.now());
   const productInputRef = useRef<HTMLInputElement>(null);
   const customerInputRef = useRef<HTMLInputElement>(null);
   // Live camera state
@@ -230,10 +232,13 @@ export default function ShopOrders() {
     // Every 60s: send reminder notification for any pending order older than 1 min,
     // and auto-cancel any pending order older than 15 min
     const timerCheck = setInterval(() => checkPendingOrderTimers(), 60000);
+    // Tick every second so the visible "time left to mark ready" countdown updates.
+    const tick = setInterval(() => setNowTick(Date.now()), 1000);
     return () => {
       supabase.removeChannel(channel);
       clearInterval(poll);
       clearInterval(timerCheck);
+      clearInterval(tick);
       // Clear any per-order timeouts
       autoCancelTimersRef.current.forEach(t => clearTimeout(t));
     };
@@ -979,6 +984,29 @@ export default function ShopOrders() {
                         : status.charAt(0).toUpperCase() + status.slice(1)}
                     </span>
                   </div>
+                  {status === "pending" && order.created_at && (() => {
+                    const deadline = new Date(order.created_at).getTime() + 15 * 60 * 1000;
+                    const msLeft = deadline - nowTick;
+                    const urgent = msLeft <= 5 * 60 * 1000;
+                    if (msLeft <= 0) {
+                      return (
+                        <div style={{display:"flex",alignItems:"center",gap:8,background:"#FFF0F0",border:"1.5px solid #FFCDD2",borderRadius:10,padding:"8px 12px",marginBottom:10}}>
+                          <span style={{fontSize:13,fontWeight:800,color:"#E53E3E"}}>⏰ Time's up — cancelling…</span>
+                        </div>
+                      );
+                    }
+                    const mins = Math.floor(msLeft / 60000);
+                    const secs = Math.floor((msLeft % 60000) / 1000);
+                    const mmss = `${mins}:${secs.toString().padStart(2, "0")}`;
+                    return (
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,background:urgent?"#FFF4E5":"#EBF1FF",border:`1.5px solid ${urgent?"#FFD9A8":"#C9DBFF"}`,borderRadius:10,padding:"8px 12px",marginBottom:10}}>
+                        <span style={{fontSize:12,fontWeight:700,color:urgent?"#B25E00":"#1A6BFF"}}>
+                          {urgent ? "⚠️ Mark ready soon!" : "⏱️ Time to mark ready"}
+                        </span>
+                        <span style={{fontSize:15,fontWeight:900,color:urgent?"#E53E3E":"#1A6BFF",fontVariantNumeric:"tabular-nums"}}>{mmss}</span>
+                      </div>
+                    );
+                  })()}
                   <div className="order-price">₹{order.total ?? 0}</div>
 
                   {order.order_type === "delivery" && order.delivery_address && (
@@ -1131,7 +1159,7 @@ export default function ShopOrders() {
                               📱 Customer UPI for refund: <strong>{order.refund_upi}</strong>
                             </div>
                             <div style={{fontSize:11,color:"#8A96B5",marginBottom:8}}>
-                              Refund ₹{(order.amount_paid||0)+(order.amount_cash||0)} to this UPI and attach screenshot below
+                              Refund ₹{order.amount_paid||0} to this UPI and attach screenshot below{order.amount_cash > 0 ? <span> (only the prepaid amount — the ₹{order.amount_cash} cash was never collected)</span> : ""}
                             </div>
                             <label style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",border:"2px dashed #E4EAFF",borderRadius:10,cursor:"pointer",color:"#1A6BFF",fontSize:12,fontWeight:700}}>
                               📸 Attach refund screenshot
