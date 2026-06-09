@@ -1165,15 +1165,22 @@ export default function ShopOrders() {
                               📸 Attach refund screenshot
                               <input type="file" accept="image/*" style={{display:"none"}} onChange={async (e) => {
                                 const f = e.target.files?.[0]; if (!f) return;
-                                const path = `refunds/${order.id}_${Date.now()}.jpg`;
-                                const { error } = await supabase.storage.from("product-images").upload(path, f, {upsert:true, contentType:f.type});
-                                if (!error) {
+                                try {
+                                  const ext = (f.name.split(".").pop() || "jpg").toLowerCase();
+                                  const path = `refunds/${order.id}_${Date.now()}.${ext}`;
+                                  const { error: upErr } = await supabase.storage.from("product-images").upload(path, f, {upsert:true, contentType:f.type});
+                                  if (upErr) { alert("Upload failed: " + upErr.message); return; }
                                   const { data } = supabase.storage.from("product-images").getPublicUrl(path);
+                                  let updateErr: any = null;
                                   for (const id of (order.all_ids||[order.id])) {
-                                    await supabase.from("orders").update({ refund_screenshot: data.publicUrl }).eq("id", id);
+                                    const { error: uErr } = await supabase.from("orders").update({ refund_screenshot: data.publicUrl, refund_status: "done" }).eq("id", id);
+                                    if (uErr) updateErr = uErr;
                                   }
+                                  if (updateErr) { alert("Could not save the screenshot to the order: " + updateErr.message); return; }
                                   fetchOrders();
                                   alert("✓ Refund screenshot sent to customer!");
+                                } catch (ex: any) {
+                                  alert("Something went wrong attaching the screenshot: " + (ex?.message || ex));
                                 }
                               }}/>
                             </label>
