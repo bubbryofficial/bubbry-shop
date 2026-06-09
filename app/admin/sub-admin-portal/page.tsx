@@ -741,7 +741,7 @@ export default function SubAdminPortal() {
         <div className="login-wrap">
           <div className="login-card">
             <div style={{textAlign:"center",marginBottom:24}}>
-              <div style={{fontSize:48,marginBottom:8}}>🫧</div>
+              <div style={{marginBottom:8}}><img src="/bubbry-logo-blue.png" alt="Bubbry" style={{height:60,width:60,objectFit:"contain"}} /></div>
               <div style={{fontSize:22,fontWeight:900,color:"#0D1B3E"}}>Bubbry Sub-Admin</div>
               <div style={{fontSize:13,color:"#8A96B5",marginTop:4}}>City Management Portal</div>
             </div>
@@ -761,7 +761,7 @@ export default function SubAdminPortal() {
       <style>{CSS}</style>
       <div className="header">
         <div className="header-row">
-          <div><div className="header-title">🫧 Bubbry Sub-Admin</div><div className="header-sub">{admin.city}, {admin.state}</div></div>
+          <div><div className="header-title"><img src="/bubbry-logo-white.png" alt="Bubbry" style={{height:20,width:20,verticalAlign:"middle",marginRight:6,objectFit:"contain"}} />Bubbry Sub-Admin</div><div className="header-sub">{admin.city}, {admin.state}</div></div>
           <button className="logout-btn" onClick={logout}>Logout</button>
         </div>
       </div>

@@ -254,7 +254,7 @@ export default function AdminPage() {
     <div style={{minHeight:"100vh",background:"#F4F6FB",fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
       <style>{CSS}</style>
       <div className="admin-header">
-        <div className="admin-brand">🫧 Bubbry Admin</div>
+        <div className="admin-brand"><img src="/bubbry-logo-white.png" alt="Bubbry" style={{height:22,width:22,verticalAlign:"middle",marginRight:6,objectFit:"contain"}} />Bubbry Admin</div>
         <a href="/admin/shops-map" style={{display:"flex",alignItems:"center",gap:5,background:"rgba(255,255,255,0.1)",padding:"6px 12px",borderRadius:9,textDecoration:"none",color:"white",fontSize:12,fontWeight:800}}>🗺️ Shops Map</a>
         <div className="admin-badge">Admin Panel</div>
       </div>

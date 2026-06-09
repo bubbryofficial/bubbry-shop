@@ -204,7 +204,7 @@ export default function HelpPage() {
       <div className="top-bar">
         <div className="top-row">
           <a href={backHref} className="back-btn">←</a>
-          <div className="avatar">🫧</div>
+          <div className="avatar"><img src="/bubbry-logo-white.png" alt="Bubbry" style={{width:18,height:18,objectFit:"contain"}} /></div>
           <div style={{ flex: 1 }}>
             <div className="top-title">Bubble Support</div>
             <div className="top-sub" style={{ display: "flex", alignItems: "center", gap: 5 }}>
@@ -226,7 +226,7 @@ export default function HelpPage() {
       <div className="chat-area">
         {messages.map((msg, i) => (
           <div key={i} className={`msg-row ${msg.role === "user" ? "user" : ""}`}>
-            {msg.role === "bot" && <div className="avatar">🫧</div>}
+            {msg.role === "bot" && <div className="avatar"><img src="/bubbry-logo-white.png" alt="Bubbry" style={{width:18,height:18,objectFit:"contain"}} /></div>}
             <div className={`msg ${msg.role === "bot" ? "bot" : "user"}`}>
               <div className={`bubble ${msg.role === "bot" ? "bot" : "user"}`}>
                 {renderText(msg.text)}
@@ -237,7 +237,7 @@ export default function HelpPage() {
         ))}
         {loading && (
           <div className="msg-row">
-            <div className="avatar">🫧</div>
+            <div className="avatar"><img src="/bubbry-logo-white.png" alt="Bubbry" style={{width:18,height:18,objectFit:"contain"}} /></div>
             <div className="typing-bubble">
               <div className="typing-dot" />
               <div className="typing-dot" />

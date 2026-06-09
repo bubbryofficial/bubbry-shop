@@ -222,6 +222,9 @@ export default function ShopDashboard() {
   const [subscriptionPlan, setSubscriptionPlan] = useState<"pickup" | "full" | null>(null);
   const [subscriptionStatus, setSubscriptionStatus] = useState<string | null>(null);
   const [upiId, setUpiId] = useState("");
+  // Tracks the UPI actually saved in the DB (separate from what's being typed),
+  // so the "saved" view only shows for a truly-saved UPI — not after one keystroke.
+  const [savedUpi, setSavedUpi] = useState("");
   const [deliveryRange, setDeliveryRange] = useState(2);   // km, 0.5–2
   const [savingRange, setSavingRange] = useState(false);
   const [newPwd, setNewPwd] = useState("");
@@ -326,7 +329,7 @@ export default function ShopDashboard() {
     if (!session?.user) { setSavingUpi(false); return; }
     const { error } = await supabase.from("profiles").update({ upi_id: upiId }).eq("id", session.user.id);
     setSavingUpi(false);
-    if (error) { alert("Failed to save: " + error.message); } else { alert("UPI ID saved! ✓"); }
+    if (error) { alert("Failed to save: " + error.message); } else { setSavedUpi(upiId); alert("UPI ID saved! ✓"); }
   }
 
   async function loadShopStatus(userId?: string) {
@@ -360,7 +363,7 @@ export default function ShopDashboard() {
               setOffersPickup(profileData.offers_pickup === true || profileData.offers_pickup === null);
               setShopfrontVerified(profileData.shopfront_verified === true);
               setShopfrontImage(profileData.shopfront_image ?? "");
-              setUpiId(profileData.upi_id ?? "");
+              setUpiId(profileData.upi_id ?? ""); setSavedUpi(profileData.upi_id ?? "");
               setShopName(profileData.shop_name || "My Store");
               setOwnerName(profileData.name || "");
               setProfileComplete(!!(profileData.upi_id && profileData.shopfront_image));
@@ -389,7 +392,7 @@ export default function ShopDashboard() {
       setOffersPickup(data.offers_pickup === true || data.offers_pickup === null);
       setShopfrontVerified(data.shopfront_verified === true);
       setShopfrontImage(data.shopfront_image ?? "");
-      setUpiId(data.upi_id ?? "");
+      setUpiId(data.upi_id ?? ""); setSavedUpi(data.upi_id ?? "");
       setShopName(data.shop_name || "My Store");
       setOwnerName(data.name || "");
       setProfileComplete(!!(data.upi_id && data.shopfront_image));
@@ -858,7 +861,7 @@ export default function ShopDashboard() {
       <div className="top-bar">
         <div className="top-row">
           <div style={{display:"flex",flexDirection:"column",gap:2,cursor:"pointer"}} onClick={() => setShowProfile(true)}>
-            <div className="brand">🫧 {shopName}</div>
+            <div className="brand"><img src="/bubbry-logo-white.png" alt="Bubbry" style={{height:24,width:24,verticalAlign:"middle",marginRight:6,objectFit:"contain"}} />{shopName}</div>
             {profileComplete
               ? <div className="complete-badge">✓ Profile complete</div>
               : <div className="incomplete-badge">⚠️ Complete your profile</div>
@@ -1475,13 +1478,13 @@ export default function ShopDashboard() {
             <div className="ps">
               <div className="ps-title">💳 UPI ID</div>
               <div style={{fontSize:12,color:"#8A96B5",marginBottom:12,fontWeight:500}}>Customers pay directly to this UPI ID for all orders</div>
-              {upiId && !editingUpi ? (
+              {savedUpi && !editingUpi ? (
                 <div className="upi-saved-row">
                   <div>
                     <div style={{fontSize:11,color:"#00875A",fontWeight:700,marginBottom:3}}>✓ UPI ID Saved</div>
-                    <div className="upi-saved-id">{upiId}</div>
+                    <div className="upi-saved-id">{savedUpi}</div>
                   </div>
-                  <button className="edit-upi-btn" onClick={() => setEditingUpi(true)}>✏️ Edit</button>
+                  <button className="edit-upi-btn" onClick={() => { setUpiId(savedUpi); setEditingUpi(true); }}>✏️ Edit</button>
                 </div>
               ) : (
                 <>
@@ -1489,7 +1492,7 @@ export default function ShopDashboard() {
                   <button className="save-upi-btn" disabled={savingUpi || !upiId.trim()} onClick={async () => { await saveUpi(); setEditingUpi(false); setProfileComplete(!!(upiId && shopfrontImage)); }}>
                     {savingUpi ? "Saving..." : "Save UPI ID"}
                   </button>
-                  {editingUpi && <button onClick={() => setEditingUpi(false)} style={{width:"100%",marginTop:8,padding:10,background:"white",border:"1.5px solid #E4EAFF",borderRadius:12,fontSize:13,fontWeight:700,color:"#8A96B5",cursor:"pointer",fontFamily:"'Plus Jakarta Sans',sans-serif"}}>Cancel</button>}
+                  {(editingUpi && savedUpi) && <button onClick={() => { setUpiId(savedUpi); setEditingUpi(false); }} style={{width:"100%",marginTop:8,padding:10,background:"white",border:"1.5px solid #E4EAFF",borderRadius:12,fontSize:13,fontWeight:700,color:"#8A96B5",cursor:"pointer",fontFamily:"'Plus Jakarta Sans',sans-serif"}}>Cancel</button>}
                 </>
               )}
             </div>

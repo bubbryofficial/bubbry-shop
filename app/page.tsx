@@ -67,7 +67,7 @@ export default function Home() {
 
       <div style={{ position: "relative", textAlign: "center", maxWidth: 400 }}>
         {/* Logo */}
-        <div style={{ fontSize: 56, marginBottom: 16 }}>🫧</div>
+        <div style={{ marginBottom: 16 }}><img src="/bubbry-logo-blue.png" alt="Bubbry" style={{height:72,width:72,objectFit:"contain"}} /></div>
         <h1 style={{
           fontSize: 52,
           fontWeight: 900,
