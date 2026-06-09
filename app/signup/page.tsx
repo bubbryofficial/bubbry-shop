@@ -275,6 +275,9 @@ export default function ShopSignup() {
   const [otp, setOtp] = useState("");
   const [shopfrontFile, setShopfrontFile] = useState<File | null>(null);
   const [shopfrontPreview, setShopfrontPreview] = useState("");
+  // When uploading via the native app picker, the app uploads directly and
+  // sends back the public URL — stored here so signup can finish without a File.
+  const [shopfrontUrl, setShopfrontUrl] = useState("");
   const [consentChecked, setConsentChecked] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resendTimer, setResendTimer] = useState(0);
@@ -285,6 +288,31 @@ export default function ShopSignup() {
   const fullPhone = "+91" + phone.replace(/\D/g, "");
   const cleanEmail = email.trim().toLowerCase();
   const stepNum = step === "details" ? 1 : step === "phone" ? 2 : step === "otp" ? 3 : step === "location" ? 4 : step === "shopfront" ? 5 : 5;
+
+  // Listen for the native app's shopfront upload result (used inside the app,
+  // where the WebView's web file input doesn't reliably return the file).
+  useEffect(() => {
+    function onMsg(ev: any) {
+      try {
+        const m = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
+        if (m && m.type === "SHOPFRONT_UPLOADED" && m.url) {
+          setShopfrontUrl(m.url);
+          setShopfrontPreview(m.url);
+          setLoading(false);
+        } else if (m && m.type === "SHOPFRONT_UPLOAD_ERROR") {
+          setLoading(false);
+          alert("Photo upload failed: " + (m.error || "please try again"));
+        }
+      } catch (_) {}
+    }
+    // Android WebView delivers postMessage on document; browsers on window.
+    window.addEventListener("message", onMsg);
+    document.addEventListener("message", onMsg as any);
+    return () => {
+      window.removeEventListener("message", onMsg);
+      document.removeEventListener("message", onMsg as any);
+    };
+  }, []);
 
   function startTimer() {
     setResendTimer(30);
@@ -352,6 +380,14 @@ export default function ShopSignup() {
   }
 
   async function uploadShopfront() {
+    // App path: the native picker already uploaded and gave us a URL.
+    if (shopfrontUrl) {
+      setLoading(true);
+      await supabase.from("profiles").update({ shopfront_image: shopfrontUrl, shopfront_verified: false }).eq("id", userId);
+      setLoading(false);
+      setStep("done");
+      return;
+    }
     if (!shopfrontFile) { alert("Please add a photo of your shopfront"); return; }
     setLoading(true);
     const path = `shopfronts/${userId}.jpg`;
@@ -473,14 +509,23 @@ export default function ShopSignup() {
             <div style={{ fontSize: 17, fontWeight: 800, color: "#0D1B3E", marginBottom: 6 }}>Shop Photo</div>
             <div className="info-banner">⚠️ Upload a clear photo of your shopfront. An admin will review and approve it before you can go live.</div>
             <div style={{ marginBottom: 20 }}>
-              <div className={`img-upload-box ${shopfrontPreview ? "has-img" : ""}`} onClick={() => fileInputRef.current?.click()}>
+              <div className={`img-upload-box ${shopfrontPreview ? "has-img" : ""}`} onClick={() => {
+                const RN = (window as any).ReactNativeWebView;
+                if (RN) {
+                  // Inside the app: use the native picker (WebView file input is unreliable).
+                  setLoading(true);
+                  try { RN.postMessage(JSON.stringify({ type: "PICK_SHOPFRONT", userId })); } catch (_) { setLoading(false); }
+                } else {
+                  fileInputRef.current?.click();
+                }
+              }}>
                 {shopfrontPreview
                   ? <img src={shopfrontPreview} alt="Shopfront" className="img-preview" />
                   : <><div style={{ fontSize: 36, marginBottom: 8 }}>🏪</div><div style={{ fontSize: 14, fontWeight: 700, color: "#4A5880" }}>Tap to upload shopfront photo</div></>}
               </div>
               <input ref={fileInputRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (!f) return; setShopfrontFile(f); const r = new FileReader(); r.onload = () => setShopfrontPreview(r.result as string); r.readAsDataURL(f); }} />
             </div>
-            <button className="auth-btn" onClick={uploadShopfront} disabled={loading||!shopfrontFile}>{loading ? "Uploading..." : "Submit for Review →"}</button>
+            <button className="auth-btn" onClick={uploadShopfront} disabled={loading||(!shopfrontFile && !shopfrontUrl)}>{loading ? "Uploading..." : "Submit for Review →"}</button>
             <button className="auth-btn secondary" style={{ marginTop: 10 }} onClick={() => { setStep("done"); }} disabled={loading}>Skip for now</button>
           </>}
 
