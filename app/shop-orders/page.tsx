@@ -1161,6 +1161,21 @@ export default function ShopOrders() {
                             <div style={{fontSize:11,color:"#8A96B5",marginBottom:8}}>
                               Refund ₹{order.amount_paid||0} to this UPI and attach screenshot below{order.amount_cash > 0 ? <span> (only the prepaid amount — the ₹{order.amount_cash} cash was never collected)</span> : ""}
                             </div>
+                            {typeof window !== "undefined" && (window as any).ReactNativeWebView ? (
+                              <button
+                                style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",border:"2px dashed #E4EAFF",borderRadius:10,cursor:"pointer",color:"#1A6BFF",fontSize:12,fontWeight:700,background:"transparent",width:"100%"}}
+                                onClick={() => {
+                                  try {
+                                    (window as any).ReactNativeWebView.postMessage(JSON.stringify({
+                                      type: "PICK_REFUND_SCREENSHOT",
+                                      orderId: order.id,
+                                      orderIds: order.all_ids || [order.id],
+                                    }));
+                                  } catch (e) {}
+                                }}>
+                                📸 Attach refund screenshot
+                              </button>
+                            ) : (
                             <label style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",border:"2px dashed #E4EAFF",borderRadius:10,cursor:"pointer",color:"#1A6BFF",fontSize:12,fontWeight:700}}>
                               📸 Attach refund screenshot
                               <input type="file" accept="image/*" style={{display:"none"}} onChange={async (e) => {
@@ -1184,6 +1199,7 @@ export default function ShopOrders() {
                                 }
                               }}/>
                             </label>
+                            )}
                           </div>
                         )}
                         {order.refund_screenshot && (
