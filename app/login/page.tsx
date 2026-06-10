@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase";
+import { setCurrentSession } from "../../lib/session";
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
@@ -71,6 +72,7 @@ export default function Login() {
       setLoading(false); return;
     }
     localStorage.setItem("bubbry_shop_uid", data.user.id);
+    await setCurrentSession(data.user.id);
     setLoading(false);
     router.push("/shop-dashboard");
   }
@@ -98,6 +100,7 @@ export default function Login() {
     }
 
     localStorage.setItem("bubbry_shop_uid", data.user.id);
+    await setCurrentSession(data.user.id);
     setLoading(false);
     router.push("/shop-dashboard");
   }

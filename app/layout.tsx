@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import BubbryPopups from "../components/BubbryPopups";
+import SessionGuard from "../components/SessionGuard";
 
 export const metadata: Metadata = {
   title: "Bubbry — Shop Portal",
@@ -43,7 +44,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body>{children}<BubbryPopups /></body>
+      <body>{children}<BubbryPopups /><SessionGuard /></body>
     </html>
   );
 }
