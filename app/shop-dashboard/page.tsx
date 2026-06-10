@@ -212,6 +212,10 @@ export default function ShopDashboard() {
   const [existingImgUrl, setExistingImgUrl] = useState<string>("");
   const [uploadingImg, setUploadingImg] = useState(false);
   const [isLive, setIsLive] = useState(false);
+  // Auto open/close schedule
+  const [autoHoursEnabled, setAutoHoursEnabled] = useState(false);
+  const [businessHours, setBusinessHours] = useState<{open:string;close:string}[]>([{open:"09:00",close:"21:00"}]);
+  const [savingHours, setSavingHours] = useState(false);
   const [autoOfflinedUntil, setAutoOfflinedUntil] = useState<Date|null>(null);
   const [offersDelivery, setOffersDelivery] = useState(false);
   const [offersPickup, setOffersPickup] = useState(true);
@@ -346,7 +350,7 @@ export default function ShopDashboard() {
     }
     const { data, error } = await supabase
       .from("profiles")
-      .select("is_live, offers_delivery, offers_pickup, shopfront_verified, shopfront_image, upi_id, shop_name, name, auto_offlined_until, subscription_plan, subscription_status, delivery_range_km")
+      .select("is_live, offers_delivery, offers_pickup, shopfront_verified, shopfront_image, upi_id, shop_name, name, auto_offlined_until, subscription_plan, subscription_status, delivery_range_km, business_hours, auto_hours_enabled")
       .eq("id", uid)
       .single();
     if (error) {
@@ -388,6 +392,10 @@ export default function ShopDashboard() {
       }
       setIsLive(data.is_live === true);
       setAutoOfflinedUntil(data.auto_offlined_until ? new Date(data.auto_offlined_until) : null);
+      setAutoHoursEnabled(data.auto_hours_enabled === true);
+      if (Array.isArray(data.business_hours) && data.business_hours.length > 0) {
+        setBusinessHours(data.business_hours.map((w: any) => ({ open: w.open || "09:00", close: w.close || "21:00" })));
+      }
       setOffersDelivery(data.offers_delivery === true);
       setOffersPickup(data.offers_pickup === true || data.offers_pickup === null);
       setShopfrontVerified(data.shopfront_verified === true);
@@ -449,13 +457,43 @@ export default function ShopDashboard() {
       }
     }
 
-    const { error } = await supabase.from("profiles").update({ is_live: val }).eq("id", user.id);
+    // Stamp a manual override so the auto-schedule won't immediately undo this
+    // choice; the schedule resumes control at the next open/close boundary.
+    const { error } = await supabase.from("profiles").update({ is_live: val, schedule_override_at: new Date().toISOString() }).eq("id", user.id);
     if (error) { alert("Failed to update live status: " + error.message); setTogglingLive(false); return; }
     const { data: check } = await supabase.from("profiles").select("is_live").eq("id", user.id).single();
     const confirmed = check?.is_live === true;
     setIsLive(confirmed);
     if (val && !confirmed) alert("Could not save live status — check your Supabase RLS policies for the profiles table.");
     setTogglingLive(false);
+  }
+
+  // ---- Auto open/close schedule ----
+  function addHoursWindow() {
+    if (businessHours.length >= 3) return;
+    setBusinessHours([...businessHours, { open: "09:00", close: "21:00" }]);
+  }
+  function removeHoursWindow(idx: number) {
+    setBusinessHours(businessHours.filter((_, i) => i !== idx));
+  }
+  function updateHoursWindow(idx: number, field: "open" | "close", value: string) {
+    setBusinessHours(businessHours.map((w, i) => i === idx ? { ...w, [field]: value } : w));
+  }
+  async function saveHours(enabled: boolean) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    // Validate: each window's close must be after open
+    for (const w of businessHours) {
+      if (w.close <= w.open) { alert("Each window's closing time must be after its opening time."); return; }
+    }
+    setSavingHours(true);
+    const { error } = await supabase.from("profiles")
+      .update({ business_hours: businessHours, auto_hours_enabled: enabled })
+      .eq("id", session.user.id);
+    setSavingHours(false);
+    if (error) { alert("Failed to save hours: " + error.message); return; }
+    setAutoHoursEnabled(enabled);
+    if (enabled) alert("✓ Auto open/close saved! Your shop will follow this schedule.");
   }
 
   async function toggleDelivery(val: boolean) {
@@ -914,6 +952,44 @@ export default function ShopDashboard() {
                 <div className={`toggle-thumb ${isLive ? "on" : ""}`} />
               </div>
             </label>
+          </div>
+          <div style={{marginTop:14,padding:"14px 16px",background:"#F7F9FF",border:"1.5px solid #E4EAFF",borderRadius:14}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:800,color:"#0D1B3E"}}>🕒 Auto Open / Close</div>
+                <div style={{fontSize:11.5,color:"#8A96B5",marginTop:2}}>Shop goes live & offline automatically by schedule</div>
+              </div>
+              <label className="toggle-switch" onClick={() => !savingHours && saveHours(!autoHoursEnabled)}>
+                <div className={`toggle-track ${autoHoursEnabled ? "on" : ""}`}>
+                  <div className={`toggle-thumb ${autoHoursEnabled ? "on" : ""}`} />
+                </div>
+              </label>
+            </div>
+            {autoHoursEnabled && (
+              <div style={{marginTop:12}}>
+                {businessHours.map((w, idx) => (
+                  <div key={idx} style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                    <input type="time" value={w.open} onChange={e => updateHoursWindow(idx, "open", e.target.value)}
+                      style={{flex:1,padding:"8px 10px",borderRadius:10,border:"1.5px solid #E4EAFF",fontSize:13,fontFamily:"'Plus Jakarta Sans',sans-serif",color:"#0D1B3E"}} />
+                    <span style={{fontSize:12,color:"#8A96B5",fontWeight:700}}>to</span>
+                    <input type="time" value={w.close} onChange={e => updateHoursWindow(idx, "close", e.target.value)}
+                      style={{flex:1,padding:"8px 10px",borderRadius:10,border:"1.5px solid #E4EAFF",fontSize:13,fontFamily:"'Plus Jakarta Sans',sans-serif",color:"#0D1B3E"}} />
+                    {businessHours.length > 1 && (
+                      <button onClick={() => removeHoursWindow(idx)} style={{background:"#FFF0F0",border:"1.5px solid #FFCDD2",borderRadius:8,width:32,height:32,fontSize:14,color:"#E53E3E",cursor:"pointer",flexShrink:0}}>✕</button>
+                    )}
+                  </div>
+                ))}
+                <div style={{display:"flex",gap:8,marginTop:10}}>
+                  {businessHours.length < 3 && (
+                    <button onClick={addHoursWindow} style={{flex:1,padding:9,background:"white",border:"1.5px dashed #C9DBFF",borderRadius:10,fontSize:12.5,fontWeight:700,color:"#1A6BFF",cursor:"pointer",fontFamily:"'Plus Jakarta Sans',sans-serif"}}>+ Add another time</button>
+                  )}
+                  <button onClick={() => saveHours(true)} disabled={savingHours} style={{flex:1,padding:9,background:"#1A6BFF",border:"none",borderRadius:10,fontSize:12.5,fontWeight:800,color:"white",cursor:"pointer",fontFamily:"'Plus Jakarta Sans',sans-serif"}}>{savingHours ? "Saving..." : "Save schedule"}</button>
+                </div>
+                <div style={{fontSize:10.5,color:"#A0AABF",marginTop:8,lineHeight:1.5}}>
+                  Times are IST. You can still flip the shop on/off manually anytime — your manual change holds until the next scheduled open/close.
+                </div>
+              </div>
+            )}
           </div>
           <div className="delivery-row">
             <button
