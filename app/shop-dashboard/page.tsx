@@ -211,6 +211,10 @@ export default function ShopDashboard() {
   const [imgPreview, setImgPreview] = useState<string>("");
   const [existingImgUrl, setExistingImgUrl] = useState<string>("");
   const [uploadingImg, setUploadingImg] = useState(false);
+  // Up to 5 extra gallery photos (admin-approved before they show to customers).
+  const [galleryFiles, setGalleryFiles] = useState<File[]>([]);
+  const [galleryPreviews, setGalleryPreviews] = useState<string[]>([]);
+  const galleryInputRef = useRef<HTMLInputElement|null>(null);
   const [isLive, setIsLive] = useState(false);
   // Auto open/close schedule
   const [autoHoursEnabled, setAutoHoursEnabled] = useState(false);
@@ -705,6 +709,48 @@ export default function ShopDashboard() {
     reader.readAsDataURL(file);
   }
 
+  function handleGallerySelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    e.target.value = "";
+    const room = 5 - galleryFiles.length;
+    if (room <= 0) { alert("You can attach up to 5 extra photos."); return; }
+    const add = files.slice(0, room);
+    if (files.length > room) alert(`Only ${room} more photo${room !== 1 ? "s" : ""} can be added (max 5).`);
+    setGalleryFiles((prev) => [...prev, ...add]);
+    add.forEach((f) => {
+      const reader = new FileReader();
+      reader.onload = () => setGalleryPreviews((prev) => [...prev, reader.result as string]);
+      reader.readAsDataURL(f);
+    });
+  }
+
+  function removeGalleryPhoto(idx: number) {
+    setGalleryFiles((prev) => prev.filter((_, i) => i !== idx));
+    setGalleryPreviews((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  async function uploadGalleryPhotos(productId: string, userId: string) {
+    for (let i = 0; i < galleryFiles.length; i++) {
+      const file = galleryFiles[i];
+      try {
+        const ext = file.name.split(".").pop() || "jpg";
+        const path = `gallery/${productId}/${Date.now()}_${i}.${ext}`;
+        const { error: upErr } = await supabase.storage.from("product-images").upload(path, file, { upsert: true });
+        if (upErr) throw new Error(upErr.message);
+        const { data: pub } = supabase.storage.from("product-images").getPublicUrl(path);
+        await supabase.from("product_photos").insert({
+          master_product_id: productId,
+          url: pub.publicUrl,
+          status: "pending",
+          uploaded_by: userId,
+        });
+      } catch (err: any) {
+        console.error("Gallery upload failed:", err?.message);
+      }
+    }
+  }
+
   async function uploadImage(file: File, productId: string): Promise<string> {
     // Use jpg extension always for consistency
     const path = `products/${productId}.jpg`;
@@ -820,14 +866,16 @@ export default function ShopDashboard() {
         .is("barcode", null);
     }
 
-    // Upload image if new file selected and no existing image
+    // Upload image if new file selected and no existing image.
+    // Goes to pending_image_url so an admin approves it before it shows to
+    // customers — consistent with the add-product page and the gallery photos.
     if (imgFile && productId && !existingImgUrl) {
       try {
         setUploadingImg(true);
         const publicUrl = await uploadImage(imgFile, productId);
         const { error: imgUpdateError } = await supabase
           .from("master_products")
-          .update({ image_url: publicUrl })
+          .update({ pending_image_url: publicUrl })
           .eq("id", productId);
         if (imgUpdateError) {
           alert("Image saved to storage but could not update product record: " + imgUpdateError.message);
@@ -841,6 +889,10 @@ export default function ShopDashboard() {
 
     const mrpNum = mrp ? Number(mrp) : Number(price);
     if (Number(price) > mrpNum) { alert("Discounted price cannot be higher than MRP."); setLoading(false); return; }
+    // Upload any extra gallery photos (pending admin approval).
+    if (galleryFiles.length > 0 && productId) {
+      await uploadGalleryPhotos(productId, user.id);
+    }
     const { error } = await supabase.from("shop_products").upsert({
       shop_id: user.id,
       product_id: productId,
@@ -856,6 +908,7 @@ export default function ShopDashboard() {
     setName(""); setPrice(""); setMrp(""); setStock(""); setSize("");
     setScannedBarcode(""); setManualBarcode(""); setSelectedProductId(null);
     setImgFile(null); setImgPreview(""); setExistingImgUrl(""); setExistingShopProduct(null);
+    setGalleryFiles([]); setGalleryPreviews([]);
     setCategory(""); setIsNewProduct(false);
     setLoading(false); setAddSuccess(true);
     setTimeout(() => setAddSuccess(false), 3000);
@@ -1294,6 +1347,35 @@ export default function ShopDashboard() {
                     capture="environment"
                     style={{ display: "none" }}
                     onChange={handleImgSelect}
+                  />
+                </div>
+
+                {/* Extra gallery photos (up to 5, admin-approved) */}
+                <div className="field">
+                  <label className="field-label">More Photos ({galleryFiles.length}/5) — optional</label>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+                    {galleryPreviews.map((src, idx) => (
+                      <div key={idx} style={{position:"relative",width:64,height:64}}>
+                        <img src={src} alt="" style={{width:64,height:64,objectFit:"cover",borderRadius:10,border:"1.5px solid #E4EAFF"}} />
+                        <button type="button" onClick={() => removeGalleryPhoto(idx)}
+                          style={{position:"absolute",top:-6,right:-6,width:20,height:20,borderRadius:"50%",background:"#E53E3E",color:"white",border:"none",fontSize:11,fontWeight:800,cursor:"pointer",lineHeight:1}}>✕</button>
+                      </div>
+                    ))}
+                    {galleryFiles.length < 5 && (
+                      <button type="button" onClick={() => galleryInputRef.current?.click()}
+                        style={{width:64,height:64,borderRadius:10,border:"1.5px dashed #A3BFFF",background:"#F4F7FF",color:"#1A6BFF",fontSize:24,fontWeight:800,cursor:"pointer"}}>+</button>
+                    )}
+                  </div>
+                  <div style={{fontSize:11,color:"#8A96B5",fontWeight:600,marginTop:6}}>
+                    Extra photos are shown to customers after an admin approves them.
+                  </div>
+                  <input
+                    ref={galleryInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={handleGallerySelect}
                   />
                 </div>
 

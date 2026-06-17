@@ -71,6 +71,11 @@ export default function AddProduct() {
   const [uploadingMap, setUploadingMap] = useState<Record<string, boolean>>({});
   const [imgFileMap, setImgFileMap] = useState<Record<string, File>>({});
   const [imgPreviewMap, setImgPreviewMap] = useState<Record<string, string>>({});
+  // Multi-photo (up to 5) gallery photos pending admin approval, per product.
+  const [photoCountMap, setPhotoCountMap] = useState<Record<string, number>>({});
+  const [galleryUploadingMap, setGalleryUploadingMap] = useState<Record<string, boolean>>({});
+  const [galleryDoneMap, setGalleryDoneMap] = useState<Record<string, number>>({});
+  const galleryInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
@@ -87,6 +92,71 @@ export default function AddProduct() {
     const { data } = await query;
     setProducts(data || []);
     setLoading(false);
+    // Load how many gallery photos (approved + pending) each product already has,
+    // so we can enforce the up-to-5 limit.
+    const ids = (data || []).map((p: any) => p.id);
+    if (ids.length > 0) {
+      const { data: photoRows } = await supabase
+        .from("product_photos")
+        .select("master_product_id, status")
+        .in("master_product_id", ids)
+        .in("status", ["approved", "pending"]);
+      const counts: Record<string, number> = {};
+      (photoRows || []).forEach((r: any) => {
+        counts[r.master_product_id] = (counts[r.master_product_id] || 0) + 1;
+      });
+      setPhotoCountMap(counts);
+    }
+  }
+
+  const MAX_PHOTOS = 5;
+
+  async function handleGallerySelect(productId: string, e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    e.target.value = ""; // allow re-selecting same files later
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { alert("Please log in first."); return; }
+
+    const already = photoCountMap[productId] || 0;
+    const remaining = MAX_PHOTOS - already;
+    if (remaining <= 0) { alert("This product already has the maximum of 5 photos (approved or pending)."); return; }
+
+    const toUpload = files.slice(0, remaining);
+    if (files.length > remaining) {
+      alert(`You can add ${remaining} more photo${remaining !== 1 ? "s" : ""} (max 5 total). Uploading the first ${remaining}.`);
+    }
+
+    setGalleryUploadingMap((p) => ({ ...p, [productId]: true }));
+    let success = 0;
+    for (let i = 0; i < toUpload.length; i++) {
+      const file = toUpload[i];
+      try {
+        const ext = file.name.split(".").pop() || "jpg";
+        const path = `gallery/${productId}/${Date.now()}_${i}.${ext}`;
+        const { error: upErr } = await supabase.storage.from("product-images").upload(path, file, { upsert: true });
+        if (upErr) throw new Error(upErr.message);
+        const { data: pub } = supabase.storage.from("product-images").getPublicUrl(path);
+        const { error: insErr } = await supabase.from("product_photos").insert({
+          master_product_id: productId,
+          url: pub.publicUrl,
+          status: "pending",
+          uploaded_by: user.id,
+        });
+        if (insErr) throw new Error(insErr.message);
+        success++;
+      } catch (err: any) {
+        console.error("Gallery photo upload failed:", err?.message);
+      }
+    }
+    setGalleryUploadingMap((p) => ({ ...p, [productId]: false }));
+    setPhotoCountMap((p) => ({ ...p, [productId]: (p[productId] || 0) + success }));
+    setGalleryDoneMap((p) => ({ ...p, [productId]: success }));
+    setTimeout(() => setGalleryDoneMap((p) => ({ ...p, [productId]: 0 })), 3000);
+    if (success > 0) {
+      alert(`✓ ${success} photo${success !== 1 ? "s" : ""} uploaded! They'll appear once an admin approves them.`);
+    }
   }
 
   function handleImgSelect(productId: string, e: React.ChangeEvent<HTMLInputElement>) {
@@ -249,6 +319,45 @@ export default function AddProduct() {
                     style={{ display: "none" }}
                     onChange={(e) => handleImgSelect(product.id, e)}
                   />
+
+                  {/* Multi-photo gallery (up to 5, admin-approved) */}
+                  {(() => {
+                    const count = photoCountMap[product.id] || 0;
+                    const full = count >= 5;
+                    const uploading = galleryUploadingMap[product.id];
+                    const justDone = galleryDoneMap[product.id] || 0;
+                    return (
+                      <div style={{marginBottom:12,padding:"10px 12px",background:"#F7F9FF",border:"1.5px solid #E4EAFF",borderRadius:10}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+                          <div>
+                            <div style={{fontSize:12,fontWeight:800,color:"#0D1B3E"}}>🖼️ Product photos ({count}/5)</div>
+                            <div style={{fontSize:10,color:"#8A96B5",fontWeight:500,marginTop:2}}>
+                              {full ? "Maximum reached" : "Add photos — shown after admin approval"}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => { if (!full && !uploading) galleryInputRefs.current[product.id]?.click(); }}
+                            disabled={full || uploading}
+                            style={{padding:"8px 12px",background:full?"#E4EAFF":"#1A6BFF",color:full?"#8A96B5":"white",border:"none",borderRadius:9,fontSize:12,fontWeight:800,cursor:full||uploading?"default":"pointer",fontFamily:"'Plus Jakarta Sans',sans-serif",whiteSpace:"nowrap",flexShrink:0}}
+                          >
+                            {uploading ? "⏳ Uploading..." : justDone > 0 ? `✓ +${justDone}` : full ? "Full" : "+ Add photos"}
+                          </button>
+                        </div>
+                        {count > 0 && (
+                          <div style={{fontSize:10,color:"#946200",fontWeight:700,marginTop:6}}>📸 Newly added photos stay pending until an admin approves them.</div>
+                        )}
+                        <input
+                          ref={(el) => { galleryInputRefs.current[product.id] = el; }}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          style={{ display: "none" }}
+                          onChange={(e) => handleGallerySelect(product.id, e)}
+                        />
+                      </div>
+                    );
+                  })()}
 
                   <div className="input-row">
                     <div className="mini-field">

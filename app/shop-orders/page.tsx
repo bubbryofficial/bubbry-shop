@@ -557,7 +557,19 @@ export default function ShopOrders() {
     }
     fetchOrders();
     if (pickupOtp) {
-      alert(`Order is ready!\n\nPickup OTP: ${pickupOtp}\n\nCustomer must show this OTP when collecting their order.`);
+      // Privacy: do NOT show the OTP to the shopkeeper — it's the customer's
+      // proof of collection. Send it to the CUSTOMER as a notification instead;
+      // the shopkeeper only verifies the code the customer presents.
+      if (group.customer_id) {
+        await sendNotification(
+          group.customer_id,
+          "🛍️ Your order is ready for pickup",
+          `Show this Pickup OTP at the shop to collect your order: ${pickupOtp}`,
+          "order",
+          "/my-orders"
+        );
+      }
+      alert("Order marked ready! The customer has been sent their pickup OTP. Ask them to show it when collecting.");
     }
   }
 
@@ -922,6 +934,8 @@ export default function ShopOrders() {
   }
 
   const filtered = filter === "all" ? orders : orders.filter((o: any) => o.status === filter);
+  // Count orders still waiting to be marked ready (new/unaccepted).
+  const pendingCount = orders.filter((o: any) => (o.status ?? "pending") === "pending").length;
 
   return (
     <div className="page">
@@ -931,6 +945,30 @@ export default function ShopOrders() {
         <a href="/shop-dashboard" className="back-btn">←</a>
         <div className="page-title">Orders 📋</div>
       </div>
+
+      {pendingCount > 0 && (
+        <div
+          onClick={() => setFilter("pending")}
+          style={{
+            display: "flex", alignItems: "center", gap: 10,
+            margin: "12px 16px 0", padding: "13px 16px",
+            background: "linear-gradient(135deg,#FF6B2B,#FF4D4D)",
+            borderRadius: 14, cursor: "pointer",
+            boxShadow: "0 4px 16px rgba(255,77,77,0.28)",
+          }}
+        >
+          <span style={{ fontSize: 22 }}>🔔</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 900, color: "white", letterSpacing: -0.2 }}>
+              {pendingCount} order{pendingCount !== 1 ? "s" : ""} waiting to be marked ready
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.9)", marginTop: 1 }}>
+              Tap to view — accept &amp; mark them ready before they auto-cancel
+            </div>
+          </div>
+          <span style={{ fontSize: 16, color: "white", fontWeight: 800 }}>→</span>
+        </div>
+      )}
 
       <div className="filter-tabs">
         {FILTERS.map((f) => (
@@ -953,7 +991,15 @@ export default function ShopOrders() {
           filtered.map((order: any) => {
             const status = order.status ?? "pending";
             return (
-              <div key={order.group_id || order.id} className="order-card">
+              <div
+                key={order.group_id || order.id}
+                className="order-card"
+                style={status === "pending" ? {
+                  borderLeft: "5px solid #FF6B2B",
+                  background: "#FFF8F4",
+                  boxShadow: "0 4px 16px rgba(255,107,43,0.15)",
+                } : undefined}
+              >
                 <div className="order-hdr">
                   <div className="order-id">#{order.id.slice(0, 8).toUpperCase()}</div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

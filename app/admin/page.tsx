@@ -74,6 +74,8 @@ export default function AdminPage() {
 
   const [photos, setPhotos] = useState<any[]>([]);
   const [photoLoading, setPhotoLoading] = useState(false);
+  // Per-photo approval queue (product_photos table — up to 5 photos/product).
+  const [galleryPhotos, setGalleryPhotos] = useState<any[]>([]);
 
   const [disputes, setDisputes] = useState<any[]>([]);
   const [disputeLoading, setDisputeLoading] = useState(false);
@@ -150,6 +152,22 @@ export default function AdminPage() {
     setPhotoLoading(true);
     const { data } = await supabase.from("master_products").select("id,name,size,category,brand,image_url,pending_image_url").not("pending_image_url","is",null).order("name",{ascending:true});
     setPhotos(data||[]); setPhotoLoading(false);
+    // Also load the per-photo gallery queue (joins product name).
+    const { data: gp } = await supabase
+      .from("product_photos")
+      .select("id,url,master_product_id,created_at,master_products(name,size,category)")
+      .eq("status","pending")
+      .order("created_at",{ascending:true});
+    setGalleryPhotos(gp||[]);
+  }
+
+  async function approveGalleryPhoto(id: string) {
+    await supabase.from("product_photos").update({status:"approved"}).eq("id",id);
+    fetchPendingPhotos();
+  }
+  async function rejectGalleryPhoto(id: string) {
+    await supabase.from("product_photos").update({status:"rejected"}).eq("id",id);
+    fetchPendingPhotos();
   }
 
   async function fetchDisputes() {
@@ -308,8 +326,27 @@ export default function AdminPage() {
       {/* ── PRODUCT PHOTOS ── */}
       {adminTab==="photos" && (
         <div style={{padding:16,display:"grid",gap:16,maxWidth:600,margin:"0 auto"}}>
+          {/* Per-photo gallery queue (up to 5 photos per product) */}
+          {galleryPhotos.length>0 && (
+            <div style={{display:"grid",gap:12}}>
+              <div style={{fontSize:13,fontWeight:900,color:"#0D1B3E"}}>🖼️ Product gallery photos ({galleryPhotos.length} pending)</div>
+              {galleryPhotos.map((gp:any)=>(
+                <div key={gp.id} className="card">
+                  <img className="proof-img" src={gp.url} alt="" style={{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:"12px 12px 0 0",cursor:"pointer"}} onClick={()=>window.open(gp.url,"_blank")} />
+                  <div className="card-body">
+                    <div className="card-title">{gp.master_products?.name || "Product"}</div>
+                    <div className="card-meta">{[gp.master_products?.size,gp.master_products?.category].filter(Boolean).join(" · ")}</div>
+                    <div className="action-row">
+                      <button className="btn btn-green" onClick={()=>approveGalleryPhoto(gp.id)}>✓ Approve</button>
+                      <button className="btn btn-red" onClick={()=>rejectGalleryPhoto(gp.id)}>✗ Reject</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {photoLoading && <div className="empty-state">Loading...</div>}
-          {!photoLoading && photos.length===0 && <div className="empty-state"><div style={{fontSize:48,marginBottom:12}}>✅</div><div style={{fontSize:16,fontWeight:800,color:"#0D1B3E"}}>No pending photos</div></div>}
+          {!photoLoading && photos.length===0 && galleryPhotos.length===0 && <div className="empty-state"><div style={{fontSize:48,marginBottom:12}}>✅</div><div style={{fontSize:16,fontWeight:800,color:"#0D1B3E"}}>No pending photos</div></div>}
           {photos.map(product=>(
             <div key={product.id} className="card">
               <div className="proof-grid" style={{borderBottom:"1.5px solid #E4EAFF"}}>
