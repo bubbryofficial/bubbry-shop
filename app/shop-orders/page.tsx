@@ -557,18 +557,10 @@ export default function ShopOrders() {
     }
     fetchOrders();
     if (pickupOtp) {
-      // Privacy: do NOT show the OTP to the shopkeeper — it's the customer's
-      // proof of collection. Send it to the CUSTOMER as a notification instead;
-      // the shopkeeper only verifies the code the customer presents.
-      if (group.customer_id) {
-        await sendNotification(
-          group.customer_id,
-          "🛍️ Your order is ready for pickup",
-          `Show this Pickup OTP at the shop to collect your order: ${pickupOtp}`,
-          "order",
-          "/my-orders"
-        );
-      }
+      // The OTP is written to the order above (delivery_otp). The database
+      // trigger bubbry_order_notifications sends the customer a push that
+      // includes this OTP when status -> ready. So we do NOT send it from here
+      // (that would double-notify) and we never show it to the shopkeeper.
       alert("Order marked ready! The customer has been sent their pickup OTP. Ask them to show it when collecting.");
     }
   }
