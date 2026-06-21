@@ -586,19 +586,20 @@ export default function ShopOrders() {
     const deliveryOtp = Math.floor(100000 + Math.random() * 900000).toString();
     let anyError: any = null;
     for (const id of (group.all_ids || [group.id])) {
-      // Essential update first: status + rider. If this fails, the dispatch
-      // truly failed, so we surface it.
+      // Essential update first: status + rider + OTP TOGETHER. The OTP must be
+      // written in the SAME update as the status change, because the
+      // notification trigger fires on the status change and reads delivery_otp
+      // at that moment. (Writing the OTP in a later update would fire the
+      // notification with a null OTP.)
       const { error: coreErr } = await supabase.from("orders").update({
         status: "out_for_delivery",
         rider_id: selectedRider || null,
+        delivery_otp: deliveryOtp,
       }).eq("id", id);
       if (coreErr) { anyError = coreErr; continue; }
 
-      // Optional fields second, each guarded so a missing column can't block
-      // the dispatch that already succeeded.
-      try {
-        await supabase.from("orders").update({ delivery_otp: deliveryOtp }).eq("id", id);
-      } catch (_) {}
+      // delivery_otp_verified is guarded separately in case the column is
+      // missing in some environments — it isn't needed by the notification.
       try {
         await supabase.from("orders").update({ delivery_otp_verified: false }).eq("id", id);
       } catch (_) {}
