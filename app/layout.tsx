@@ -6,6 +6,21 @@ import SessionGuard from "../components/SessionGuard";
 export const metadata: Metadata = {
   title: "Bubbry — Shop Portal",
   description: "India's smart local shop platform",
+  icons: {
+    icon: "/icon-rounded.png",
+    shortcut: "/icon-rounded.png",
+    apple: "/icon-rounded.png",
+  },
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Bubbry Shop",
+  },
+};
+
+export const viewport = {
+  themeColor: "#004AAD",
 };
 
 export default function RootLayout({
