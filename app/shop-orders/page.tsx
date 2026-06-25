@@ -200,6 +200,10 @@ export default function ShopOrders() {
   const [cancelProof, setCancelProof] = useState<File|null>(null);
   const [cancelProofPreview, setCancelProofPreview] = useState("");
   const [submittingCancel, setSubmittingCancel] = useState(false);
+  const [partialOrder, setPartialOrder] = useState<any>(null);
+  const [partialSelected, setPartialSelected] = useState<Record<string, number>>({});
+  const [partialNote, setPartialNote] = useState("");
+  const [submittingPartial, setSubmittingPartial] = useState(false);
   const [riders, setRiders] = useState<any[]>([]);
   const [riderSelectOrder, setRiderSelectOrder] = useState<any>(null);
   const [selectedRider, setSelectedRider] = useState("");
@@ -261,6 +265,30 @@ export default function ShopOrders() {
     const FIFTEEN_MIN = 15 * 60 * 1000;
     const ONE_MIN = 60 * 1000;
 
+    // Take the shop offline the first time an order times out in this sweep.
+    // Soft offline only (is_live=false) — NOT auto_offlined_until, so the
+    // shopkeeper can flip back Online the moment they return. schedule_override_at
+    // stops the auto-hours scheduler from immediately re-enabling them.
+    let shopTakenOffline = false;
+    const autoOfflineShop = async () => {
+      if (shopTakenOffline) return;
+      shopTakenOffline = true;
+      try {
+        const { data: prof } = await supabase.from("profiles").select("is_live").eq("id", shopId).single();
+        if (prof?.is_live === true) {
+          await supabase.from("profiles").update({
+            is_live: false,
+            schedule_override_at: new Date().toISOString(),
+          }).eq("id", shopId);
+          await sendNotification(shopId,
+            "⚫ Your shop is now Offline",
+            "An order wasn't handled within 15 minutes, so your shop was set to Offline to stop new orders piling up. Open the dashboard and go back Online when you're ready.",
+            "auto_offline", "/shop-dashboard"
+          );
+        }
+      } catch (e) { console.error("auto-offline error:", e); }
+    };
+
     // ── PENDING ORDERS: must be accepted within 15 min ──────────────────
     const { data: pendingOrders } = await supabase
       .from("orders")
@@ -295,6 +323,7 @@ export default function ShopOrders() {
           "An order was automatically cancelled because you didn't mark it ready within 15 minutes.",
           "auto_cancel", "/shop-orders"
         );
+        await autoOfflineShop();
         notifSentRef.current.delete(key);
       } else if (age >= ONE_MIN && !notifSentRef.current.has(key)) {
         const minsOld = Math.floor(age / ONE_MIN);
@@ -349,6 +378,7 @@ export default function ShopOrders() {
           "An order was cancelled because it wasn't dispatched within 15 minutes of being marked ready. Assign a rider and dispatch promptly.",
           "auto_cancel", "/shop-orders"
         );
+        await autoOfflineShop();
         notifSentRef.current.delete(key);
       } else if (age >= ONE_MIN && !notifSentRef.current.has(key)) {
         const minsOld = Math.floor(age / ONE_MIN);
@@ -372,7 +402,7 @@ export default function ShopOrders() {
 
       const { data: ordersData, error } = await supabase
         .from("orders")
-        .select("id, group_id, quantity, customer_id, order_type, delivery_address, status, created_at, product_id, shop_id, handoff_photo, product_photo, payment_proof, payment_method, amount_paid, amount_cash, delivery_otp, cancellation_reason, cancelled_by, refund_upi, refund_screenshot, cancellation_proof, rider_id, loose_product_id, loose_product_name, loose_unit, loose_qty")
+        .select("id, group_id, quantity, customer_id, order_type, delivery_address, status, created_at, product_id, shop_id, handoff_photo, product_photo, payment_proof, payment_method, amount_paid, amount_cash, delivery_otp, cancellation_reason, cancelled_by, refund_upi, refund_screenshot, cancellation_proof, rider_id, loose_product_id, loose_product_name, loose_unit, loose_qty, partial_cancel, refund_due, cancelled_qty")
         .eq("shop_id", user.id)
         .order("created_at", { ascending: false });
 
@@ -422,6 +452,7 @@ export default function ShopOrders() {
             items: [],
             total: 0,
             all_ids: [], // all order ids in group for bulk status updates
+            active_ids: [], // ids of items NOT cancelled — used for status changes & stock
           };
         }
 
@@ -433,6 +464,7 @@ export default function ShopOrders() {
           : (sp.name || "Product");
         const itemPrice = isLoose ? loosePrice : (sp.price || 0);
 
+        const itemCancelled = order.status === "cancelled";
         groupMap[key].items.push({
           id: order.id,
           product_name: productName,
@@ -442,8 +474,17 @@ export default function ShopOrders() {
           is_loose: isLoose,
           loose_qty: order.loose_qty,
           loose_unit: order.loose_unit,
+          cancelled: itemCancelled,
+          partial_cancel: !!order.partial_cancel,
+          cancelled_qty: order.cancelled_qty || 0,
+          refund_due: order.refund_due || 0,
+          refund_upi: order.refund_upi || null,
+          refund_screenshot: order.refund_screenshot || null,
         });
-        groupMap[key].total += isLoose ? loosePrice : ((sp.price || 0) * (order.quantity || 1));
+        if (!itemCancelled) {
+          groupMap[key].total += isLoose ? loosePrice : ((sp.price || 0) * (order.quantity || 1));
+          groupMap[key].active_ids.push(order.id);
+        }
         groupMap[key].all_ids.push(order.id);
         // Always update photos — any row in the group might have them
         if (order.handoff_photo) groupMap[key].handoff_photo = order.handoff_photo;
@@ -506,13 +547,23 @@ export default function ShopOrders() {
       const riderMap: any = {};
       (riderData || []).forEach((r: any) => { riderMap[r.id] = { name: r.name, phone: r.phone || null }; });
 
-      const grouped = Object.values(groupMap).map((g: any) => ({
+      const grouped = Object.values(groupMap).map((g: any) => {
+        const partialItems = (g.items || []).filter((i: any) => i.partial_cancel && (i.cancelled || (i.cancelled_qty || 0) > 0));
+        return {
         ...g,
         rider_name: g.rider_id ? riderMap[g.rider_id]?.name || null : null,
         rider_phone: g.rider_id ? riderMap[g.rider_id]?.phone || null : null,
         customer_phone: g.customer_id ? custPhoneMap[g.customer_id]?.phone || null : null,
         customer_name: g.customer_id ? custPhoneMap[g.customer_id]?.name || null : null,
-      })).sort((a: any, b: any) =>
+        // Partial-cancellation summary (whole items removed AND quantities reduced)
+        has_partial_cancel: partialItems.length > 0 && (g.active_ids?.length || 0) > 0,
+        partial_items: partialItems,
+        partial_refund_due: partialItems.reduce((s: number, i: any) => s + (i.refund_due || 0), 0),
+        partial_refund_upi: partialItems.find((i: any) => i.refund_upi)?.refund_upi || null,
+        partial_refund_screenshot: partialItems.find((i: any) => i.refund_screenshot)?.refund_screenshot || null,
+        partial_cancel_ids: partialItems.map((i: any) => i.id),
+        };
+      }).sort((a: any, b: any) =>
         new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
 
@@ -537,14 +588,14 @@ export default function ShopOrders() {
     const pickupOtp = group.order_type !== "delivery"
       ? Math.floor(100000 + Math.random() * 900000).toString()
       : null;
-    for (const id of (group.all_ids || [group.id])) {
+    for (const id of (group.active_ids || group.all_ids || [group.id])) {
       await supabase.from("orders").update({
         status: "ready",
         ...(pickupOtp ? { delivery_otp: pickupOtp } : {}),
       }).eq("id", id);
     }
     // Deduct stock when order is marked ready (not on delivery)
-    for (const item of (group.items || [])) {
+    for (const item of (group.items || []).filter((it: any) => !it.cancelled)) {
       const { data: sp } = await supabase.from("shop_products")
         .select("id, stock")
         .eq("product_id", item.product_id || item.id)
@@ -585,7 +636,7 @@ export default function ShopOrders() {
     // Generate 6-digit delivery OTP
     const deliveryOtp = Math.floor(100000 + Math.random() * 900000).toString();
     let anyError: any = null;
-    for (const id of (group.all_ids || [group.id])) {
+    for (const id of (group.active_ids || group.all_ids || [group.id])) {
       // Essential update first: status + rider + OTP TOGETHER. The OTP must be
       // written in the SAME update as the status change, because the
       // notification trigger fires on the status change and reads delivery_otp
@@ -709,6 +760,118 @@ export default function ShopOrders() {
       else { setCustomerFile(file); setCustomerPreview(url); }
       stopCamera();
     }, "image/jpeg", 0.92);
+  }
+
+  function openPartial(order: any) {
+    setPartialOrder(order);
+    setPartialSelected({});
+    setPartialNote("");
+  }
+
+  // Remove out-of-stock items OR reduce the quantity of an item, keeping the rest.
+  async function submitPartialCancel() {
+    if (!partialOrder) return;
+    const activeItems = (partialOrder.items || []).filter((i: any) => !i.cancelled);
+
+    // Build the removal plan: how many units of each item are unavailable.
+    const plan = activeItems
+      .map((i: any) => ({ item: i, u: Math.max(0, Math.min(i.quantity || 1, partialSelected[i.id] || 0)) }))
+      .filter((p: any) => p.u > 0);
+
+    if (plan.length === 0) { alert("Select at least one item (or quantity) that is unavailable."); return; }
+
+    const totalUnits = activeItems.reduce((s: number, i: any) => s + (i.quantity || 1), 0);
+    const removedUnits = plan.reduce((s: number, p: any) => s + p.u, 0);
+    if (removedUnits >= totalUnits) {
+      alert("You're removing everything. Use \"✕ Cancel\" to cancel the whole order instead.");
+      return;
+    }
+
+    setSubmittingPartial(true);
+    try {
+      // Value of removed units — from item price (NOT amount_paid, which holds
+      // the whole-order total on every row). Loose items are whole-only.
+      const V = plan.reduce((s: number, p: any) => s + (p.item.is_loose ? p.item.price : p.item.price * p.u), 0);
+      const origCash = partialOrder.amount_cash || 0;
+      const refund = Math.max(0, V - origCash);   // prepaid amount to return
+      const newCash = Math.max(0, origCash - V);   // reduced cash-on-delivery
+      const now = new Date().toISOString();
+
+      let refundStored = false;
+      const remainingActiveIds: string[] = [];
+
+      for (const p of plan) {
+        const fullItem = p.u >= (p.item.quantity || 1);
+        if (fullItem) {
+          // Whole line removed → mark the row cancelled (quantity kept for the struck-through display).
+          const { error } = await supabase.from("orders").update({
+            status: "cancelled",
+            partial_cancel: true,
+            cancelled_qty: p.item.quantity || 1,
+            cancellation_reason: "unavailable",
+            cancellation_note: partialNote || null,
+            cancelled_by: "shop",
+            cancelled_at: now,
+            refund_due: refundStored ? 0 : refund,
+          }).eq("id", p.item.id);
+          if (error) throw error;
+          refundStored = true;
+        } else {
+          // Some units unavailable → reduce quantity, keep the row active & deliverable.
+          const { error } = await supabase.from("orders").update({
+            quantity: (p.item.quantity || 1) - p.u,
+            partial_cancel: true,
+            cancelled_qty: (p.item.cancelled_qty || 0) + p.u,
+            cancellation_reason: "unavailable",
+            cancellation_note: partialNote || null,
+            refund_due: refundStored ? 0 : refund,
+          }).eq("id", p.item.id);
+          if (error) throw error;
+          refundStored = true;
+          remainingActiveIds.push(p.item.id);
+        }
+      }
+
+      // Rows that stay active = untouched items + quantity-reduced items.
+      const untouchedIds = activeItems
+        .filter((i: any) => (partialSelected[i.id] || 0) < (i.quantity || 1))
+        .map((i: any) => i.id);
+      const activeIds = Array.from(new Set([...untouchedIds, ...remainingActiveIds]));
+
+      // For COD orders, reduce the cash still owed on the remaining items.
+      if (newCash !== origCash) {
+        for (const id of activeIds) {
+          await supabase.from("orders").update({ amount_cash: newCash }).eq("id", id);
+        }
+      }
+
+      // Tell the customer.
+      if (partialOrder.customer_id) {
+        const names = plan.map((p: any) =>
+          p.u >= (p.item.quantity || 1) ? p.item.product_name : `${p.item.product_name} ×${p.u}`
+        ).join(", ");
+        await supabase.from("notifications").insert({
+          user_id: partialOrder.customer_id,
+          title: "📦 Some items unavailable",
+          body: refund > 0
+            ? `${names} could not be fulfilled and ${plan.length > 1 ? "were" : "was"} removed. The rest of your order will still be delivered. ₹${refund} will be refunded — open the app and add your UPI ID.`
+            : `${names} could not be fulfilled and ${plan.length > 1 ? "were" : "was"} removed. The rest of your order will still be delivered. Your cash-on-delivery amount has been reduced by ₹${V}.`,
+          type: "partial_cancel",
+          read: false,
+          created_at: now,
+        });
+      }
+
+      setPartialOrder(null); setPartialSelected({}); setPartialNote("");
+      fetchOrders();
+      alert(refund > 0
+        ? `✓ Removed ${removedUnits} unit(s).\n\nThe customer has been asked for their UPI so you can refund ₹${refund}. The rest of the order is ready — tap "Mark Ready".`
+        : `✓ Removed ${removedUnits} unit(s).\n\nThe customer's cash-on-delivery was reduced by ₹${V}. The rest of the order is ready — tap "Mark Ready".`);
+    } catch (e: any) {
+      alert("Could not update the order: " + (e?.message || e) +
+            "\n\nIf this mentions a column 'partial_cancel', 'refund_due' or 'cancelled_qty', the database migration hasn't been run yet.");
+    }
+    setSubmittingPartial(false);
   }
 
   async function submitCancellation() {
@@ -901,7 +1064,7 @@ export default function ShopOrders() {
     }
 
     // Mark ALL items in group as completed + save proof
-    for (const id of (order.all_ids || [order.id])) {
+    for (const id of (order.active_ids || order.all_ids || [order.id])) {
       await supabase.from("orders").update({
         status: "completed",
         handoff_photo: customerPhotoUrl,
@@ -1006,17 +1169,29 @@ export default function ShopOrders() {
                   {/* Items list */}
                   <div style={{marginBottom:10}}>
                     {(order.items || []).map((item: any, idx: number) => (
-                      <div key={item.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:idx < order.items.length-1?"1px solid #F4F6FB":"none"}}>
+                      <div key={item.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:idx < order.items.length-1?"1px solid #F4F6FB":"none",opacity:item.cancelled?0.55:1}}>
                         <div>
-                          <div style={{fontSize:14,fontWeight:700,color:"#0D1B3E"}}>{item.product_name}</div>
+                          <div style={{fontSize:14,fontWeight:700,color:"#0D1B3E",textDecoration:item.cancelled?"line-through":"none"}}>
+                            {item.product_name}
+                            {item.cancelled && item.partial_cancel && <span style={{marginLeft:6,fontSize:10,fontWeight:800,color:"#946200",background:"#FFF3D6",borderRadius:5,padding:"2px 6px",textDecoration:"none",display:"inline-block",verticalAlign:"middle"}}>Unavailable</span>}
+                          </div>
                           <div style={{fontSize:12,color:"#8A96B5"}}>Qty: {item.quantity}</div>
+                          {!item.cancelled && item.cancelled_qty > 0 && (
+                            <div style={{fontSize:11,color:"#946200",fontWeight:700,marginTop:2}}>⚠️ {item.cancelled_qty} unavailable — removed</div>
+                          )}
                         </div>
-                        <div style={{fontSize:14,fontWeight:800,color:"#1A6BFF"}}>₹{item.price * item.quantity}</div>
+                        <div style={{fontSize:14,fontWeight:800,color:item.cancelled?"#B0BACC":"#1A6BFF",textDecoration:item.cancelled?"line-through":"none"}}>₹{item.price * item.quantity}</div>
                       </div>
                     ))}
                   </div>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:8,borderTop:"1.5px solid #E4EAFF",marginBottom:10}}>
-                    <span style={{fontSize:13,fontWeight:700,color:"#4A5880"}}>{(order.items||[]).length} item{(order.items||[]).length!==1?"s":""}</span>
+                    <span style={{fontSize:13,fontWeight:700,color:"#4A5880"}}>
+                      {(order.items||[]).filter((i:any)=>!i.cancelled).length} item{(order.items||[]).filter((i:any)=>!i.cancelled).length!==1?"s":""}
+                      {(order.items||[]).some((i:any)=>i.partial_cancel) && (() => {
+                        const removed = (order.items||[]).filter((i:any)=>i.partial_cancel).reduce((s:number,i:any)=>s+(i.cancelled_qty||0),0);
+                        return removed>0 ? <span style={{color:"#946200",fontWeight:700}}> · {removed} removed</span> : null;
+                      })()}
+                    </span>
                     <span className={`status-pill ${status === "pending" ? "s-pending" : status === "ready" ? "s-ready" : status === "out_for_delivery" ? "s-out" : "s-completed"}`}>
                       {status === "out_for_delivery"
                         ? `🛵 ${order.rider_name ? `With ${order.rider_name}` : "Out for Delivery"}`
@@ -1144,17 +1319,99 @@ export default function ShopOrders() {
                     )}
                   </div>
 
+                  {/* ── Partial cancellation (some items removed, rest still being delivered) ── */}
+                  {order.has_partial_cancel && (
+                    <div style={{background:"#FFF8E6",border:"1.5px solid #FFD88A",borderRadius:12,padding:"12px 14px",marginBottom:10}}>
+                      <div style={{fontSize:13,fontWeight:800,color:"#946200",marginBottom:4}}>📦 Items removed (unavailable)</div>
+                      <div style={{fontSize:12,color:"#4A5880",fontWeight:500,marginBottom:order.partial_refund_due>0?8:0}}>
+                        {order.partial_items.map((i:any)=> i.cancelled ? i.product_name : `${i.product_name} ×${i.cancelled_qty}`).join(", ")} — removed from this order.
+                        {order.partial_refund_due>0
+                          ? <> Refund of <strong>₹{order.partial_refund_due}</strong> due to the customer.</>
+                          : <> Customer&apos;s cash-on-delivery was reduced — no online refund needed.</>}
+                      </div>
+                      {order.partial_refund_due>0 && (
+                        order.partial_refund_screenshot ? (
+                          <div>
+                            <div style={{fontSize:12,fontWeight:700,color:"#00875A",marginBottom:6}}>✅ Refund screenshot sent</div>
+                            <button onClick={() => setLightboxImg(order.partial_refund_screenshot)}
+                              style={{background:"#E6FAF4",border:"1.5px solid #B8E8D4",color:"#00875A",borderRadius:8,padding:"7px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                              View Screenshot
+                            </button>
+                          </div>
+                        ) : order.partial_refund_upi ? (
+                          <div>
+                            <div style={{fontSize:12,fontWeight:700,color:"#0D1B3E",marginBottom:6}}>
+                              📱 Customer UPI for refund: <strong>{order.partial_refund_upi}</strong>
+                            </div>
+                            <div style={{fontSize:11,color:"#8A96B5",marginBottom:8}}>
+                              Refund ₹{order.partial_refund_due} to this UPI and attach the screenshot below.
+                            </div>
+                            {typeof window !== "undefined" && (window as any).ReactNativeWebView ? (
+                              <button
+                                style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",border:"2px dashed #E4EAFF",borderRadius:10,cursor:"pointer",color:"#1A6BFF",fontSize:12,fontWeight:700,background:"transparent",width:"100%"}}
+                                onClick={() => {
+                                  try {
+                                    (window as any).ReactNativeWebView.postMessage(JSON.stringify({
+                                      type: "PICK_REFUND_SCREENSHOT",
+                                      orderId: order.partial_cancel_ids?.[0] || order.id,
+                                      orderIds: order.partial_cancel_ids || [],
+                                    }));
+                                  } catch (e) {}
+                                }}>
+                                📸 Attach refund screenshot
+                              </button>
+                            ) : (
+                            <label style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",border:"2px dashed #E4EAFF",borderRadius:10,cursor:"pointer",color:"#1A6BFF",fontSize:12,fontWeight:700}}>
+                              📸 Attach refund screenshot
+                              <input type="file" accept="image/*" style={{display:"none"}} onChange={async (e) => {
+                                const f = e.target.files?.[0]; if (!f) return;
+                                try {
+                                  const ext = (f.name.split(".").pop() || "jpg").toLowerCase();
+                                  const path = `refunds/${order.id}_partial_${Date.now()}.${ext}`;
+                                  const { error: upErr } = await supabase.storage.from("product-images").upload(path, f, {upsert:true, contentType:f.type});
+                                  if (upErr) { alert("Upload failed: " + upErr.message); return; }
+                                  const { data } = supabase.storage.from("product-images").getPublicUrl(path);
+                                  let updateErr: any = null;
+                                  for (const id of (order.partial_cancel_ids || [])) {
+                                    const { error: uErr } = await supabase.from("orders").update({ refund_screenshot: data.publicUrl, refund_status: "done" }).eq("id", id);
+                                    if (uErr) updateErr = uErr;
+                                  }
+                                  if (updateErr) { alert("Could not save the screenshot to the order: " + updateErr.message); return; }
+                                  fetchOrders();
+                                  alert("✓ Refund screenshot sent to customer!");
+                                } catch (ex: any) {
+                                  alert("Something went wrong attaching the screenshot: " + (ex?.message || ex));
+                                }
+                              }}/>
+                            </label>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{fontSize:12,color:"#8A96B5",fontWeight:600}}>Waiting for customer to provide UPI for the refund…</div>
+                        )
+                      )}
+                    </div>
+                  )}
+
                   <div className="action-row">
                     {status === "pending" && (
-                      <>
-                        <button className="action-btn btn-ready" onClick={() => markReady(order)}>
-                          Mark Ready ⭐
-                        </button>
-                        <button className="action-btn" style={{background:"#FFF0F0",color:"#E53E3E",border:"1.5px solid #FFCDD2"}}
-                          onClick={() => { setCancelOrder(order); setCancelReason(null); setCancelNote(""); setCancelProof(null); setCancelProofPreview(""); }}>
-                          ✕ Cancel
-                        </button>
-                      </>
+                      <div style={{display:"flex",flexDirection:"column",gap:8,width:"100%"}}>
+                        {(order.items||[]).filter((i:any)=>!i.cancelled).reduce((s:number,i:any)=>s+(i.quantity||1),0) >= 2 && (
+                          <button className="action-btn" style={{background:"#FFF8E6",color:"#946200",border:"1.5px solid #FFD88A",width:"100%"}}
+                            onClick={() => openPartial(order)}>
+                            📦 Item or quantity unavailable? Remove &amp; deliver the rest
+                          </button>
+                        )}
+                        <div style={{display:"flex",gap:8}}>
+                          <button className="action-btn btn-ready" onClick={() => markReady(order)}>
+                            Mark Ready ⭐
+                          </button>
+                          <button className="action-btn" style={{background:"#FFF0F0",color:"#E53E3E",border:"1.5px solid #FFCDD2"}}
+                            onClick={() => { setCancelOrder(order); setCancelReason(null); setCancelNote(""); setCancelProof(null); setCancelProofPreview(""); }}>
+                            ✕ Cancel
+                          </button>
+                        </div>
+                      </div>
                     )}
                     {status === "ready" && (
                       <div className="action-row" style={{flexDirection:"column",gap:8}}>
@@ -1504,6 +1761,105 @@ export default function ShopOrders() {
           </div>
         </div>
       )}
+
+      {/* ─── Partial Cancellation Modal (mark items / quantities unavailable) ─── */}
+      {partialOrder && (() => {
+        const activeItems = (partialOrder.items || []).filter((i: any) => !i.cancelled);
+        const plan = activeItems
+          .map((i: any) => ({ item: i, u: Math.max(0, Math.min(i.quantity || 1, partialSelected[i.id] || 0)) }))
+          .filter((p: any) => p.u > 0);
+        const V = plan.reduce((s: number, p: any) => s + (p.item.is_loose ? p.item.price : p.item.price * p.u), 0);
+        const origCash = partialOrder.amount_cash || 0;
+        const refund = Math.max(0, V - origCash);
+        const newCash = Math.max(0, origCash - V);
+        const totalUnits = activeItems.reduce((s: number, i: any) => s + (i.quantity || 1), 0);
+        const removedUnits = plan.reduce((s: number, p: any) => s + p.u, 0);
+        const removingAll = removedUnits >= totalUnits && totalUnits > 0;
+        const setQty = (id: string, n: number) => setPartialSelected(p => ({ ...p, [id]: n }));
+        return (
+        <div style={{position:"fixed",inset:0,background:"rgba(13,27,62,0.6)",zIndex:800,display:"flex",alignItems:"flex-end",justifyContent:"center",backdropFilter:"blur(4px)"}}>
+          <div style={{background:"white",borderRadius:"24px 24px 0 0",width:"100%",maxWidth:480,maxHeight:"90vh",overflowY:"auto",padding:"0 0 32px"}}>
+            <div style={{width:40,height:4,background:"#E4EAFF",borderRadius:2,margin:"14px auto 16px"}}/>
+            <div style={{padding:"0 20px 16px",borderBottom:"1.5px solid #F4F6FB"}}>
+              <div style={{fontSize:18,fontWeight:900,color:"#0D1B3E",marginBottom:4}}>📦 Items unavailable?</div>
+              <div style={{fontSize:13,color:"#8A96B5",fontWeight:500}}>Pick how many of each you can&apos;t fulfil. The rest of the order continues as normal.</div>
+            </div>
+
+            <div style={{padding:"16px 20px 0"}}>
+              {activeItems.map((item: any) => {
+                const qty = item.quantity || 1;
+                const u = Math.max(0, Math.min(qty, partialSelected[item.id] || 0));
+                const on = u > 0;
+                const stepper = qty > 1 && !item.is_loose;
+                return (
+                  <div key={item.id}
+                    style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",border:`2px solid ${on?"#E53E3E":"#E4EAFF"}`,background:on?"#FFF0F0":"white",borderRadius:12,marginBottom:8}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:14,fontWeight:700,color:"#0D1B3E"}}>{item.product_name}</div>
+                      <div style={{fontSize:12,color:"#8A96B5"}}>Ordered: {qty}{u>0 && <span style={{color:"#E53E3E",fontWeight:700}}> · removing {u}, keeping {qty-u}</span>}</div>
+                    </div>
+                    {stepper ? (
+                      <div style={{display:"flex",alignItems:"center",gap:0,flexShrink:0}}>
+                        <button onClick={() => setQty(item.id, Math.max(0, u - 1))}
+                          style={{width:32,height:32,borderRadius:"8px 0 0 8px",border:"1.5px solid #E4EAFF",background:"white",fontSize:18,fontWeight:800,color:"#1A6BFF",cursor:"pointer",fontFamily:"inherit"}}>−</button>
+                        <div style={{minWidth:34,height:32,border:"1.5px solid #E4EAFF",borderLeft:"none",borderRight:"none",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:800,color:on?"#E53E3E":"#0D1B3E"}}>{u}</div>
+                        <button onClick={() => setQty(item.id, Math.min(qty, u + 1))}
+                          style={{width:32,height:32,borderRadius:"0 8px 8px 0",border:"1.5px solid #E4EAFF",background:"white",fontSize:18,fontWeight:800,color:"#1A6BFF",cursor:"pointer",fontFamily:"inherit"}}>+</button>
+                      </div>
+                    ) : (
+                      <div onClick={() => setQty(item.id, on ? 0 : qty)}
+                        style={{width:24,height:24,borderRadius:6,border:`2px solid ${on?"#E53E3E":"#E4EAFF"}`,background:on?"#E53E3E":"white",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,cursor:"pointer"}}>
+                        {on && <span style={{color:"white",fontSize:14,fontWeight:900}}>✓</span>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Impact summary */}
+              {removedUnits > 0 && !removingAll && (
+                <div style={{background:"#F4F6FB",borderRadius:12,padding:"12px 14px",margin:"6px 0 14px"}}>
+                  <div style={{fontSize:12,fontWeight:800,color:"#0D1B3E",marginBottom:6}}>What happens:</div>
+                  <div style={{fontSize:12,color:"#4A5880",fontWeight:600,lineHeight:1.7}}>
+                    • {removedUnits} unit{removedUnits>1?"s":""} (₹{V}) removed from the order.<br/>
+                    {refund > 0
+                      ? <>• <strong style={{color:"#E53E3E"}}>Refund ₹{refund}</strong> to the customer (they prepaid for it). You&apos;ll be asked to send it after they share their UPI.</>
+                      : <>• Customer pays <strong style={{color:"#00875A"}}>₹{V} less</strong> in cash at {partialOrder.order_type === "delivery" ? "delivery" : "pickup"} (cash now ₹{newCash}).</>}
+                  </div>
+                </div>
+              )}
+
+              {removingAll && (
+                <div style={{background:"#FFF0F0",border:"1.5px solid #FFCDD2",borderRadius:12,padding:"12px 14px",margin:"6px 0 14px",fontSize:12,fontWeight:700,color:"#E53E3E",lineHeight:1.6}}>
+                  You&apos;ve removed everything. To cancel the whole order, close this and use the “✕ Cancel” button instead.
+                </div>
+              )}
+
+              {/* Optional note */}
+              {removedUnits > 0 && !removingAll && (
+                <div style={{marginBottom:14}}>
+                  <label style={{fontSize:11,fontWeight:700,color:"#8A96B5",textTransform:"uppercase",letterSpacing:"0.5px",display:"block",marginBottom:6}}>Note for customer (optional)</label>
+                  <textarea rows={2} placeholder="e.g. Only 1 in stock today, will restock soon"
+                    value={partialNote} onChange={e => setPartialNote(e.target.value)}
+                    style={{width:"100%",padding:"10px 12px",border:"1.5px solid #E4EAFF",borderRadius:10,fontSize:13,fontFamily:"inherit",resize:"none",outline:"none",boxSizing:"border-box"}}/>
+                </div>
+              )}
+
+              <button className="btn-cancel-order"
+                style={{background:"#946200"}}
+                disabled={submittingPartial || removedUnits === 0 || removingAll}
+                onClick={submitPartialCancel}>
+                {submittingPartial ? "Removing..." : removedUnits === 0 ? "Select what's unavailable" : `Remove ${removedUnits} unit${removedUnits>1?"s":""} & keep order`}
+              </button>
+              <button onClick={() => { setPartialOrder(null); setPartialSelected({}); setPartialNote(""); }}
+                style={{width:"100%",padding:12,background:"none",border:"none",color:"#8A96B5",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginTop:8}}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
 
       {lightboxImg && (
         <div className="lightbox" onClick={() => setLightboxImg(null)}>
